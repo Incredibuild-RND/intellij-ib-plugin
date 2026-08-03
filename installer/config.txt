@@ -1,0 +1,4 @@
+;!@Install@!UTF-8!
+Title="Incredibuild Build Acceleration Plugin Installer"
+RunProgram="install-launcher.exe"
+;!@InstallEnd@!

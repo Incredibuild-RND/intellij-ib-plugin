@@ -1,19 +1,58 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.github.udif2025.intellijibplugin</id>
-    <name>intellij-ib-plugin</name>
-    <vendor>udif2025</vendor>
+    <id>com.incredibuild.ibplugin</id>
+    <name>Incredibuild Build Acceleration</name>
+    <vendor>Incredibuild</vendor>
     <description><![CDATA[
-        <p><b>intellij-ib-plugin</b> is a repository that provides a pure template to make it easier to create a new plugin project.</p>
-        <p>The main goal of this template is to speed up the setup phase of plugin development for both new and experienced developers by preconfiguring the project scaffold and CI, linking to the proper documentation pages, and keeping everything organized.</p>
+        <p><b>Incredibuild Build Acceleration</b> lets you build your Rust/Cargo project through Incredibuild directly from RustRover (or IntelliJ IDEA with the Rust plugin), via a dedicated <b>Incredibuild</b> menu with Build, Rebuild, Build Selected Run Configuration, and Stop Build actions.</p>
+        <p>Incredibuild is a build acceleration tool that distributes compilation work across the free cores of multiple machines on your network (or in the cloud), cutting build times without requiring any changes to your code or project structure.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
-
-    <resource-bundle>messages.MyBundle</resource-bundle>
+    <depends>com.jetbrains.rust</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.udif2025.intellijibplugin.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.udif2025.intellijibplugin.startup.MyProjectActivity" />
+        <toolWindow id="Incredibuild"
+                    anchor="bottom"
+                    icon="/icons/incredibuild.svg"
+                    factoryClass="com.incredibuild.ibplugin.actions.IncredibuildToolWindowFactory"/>
+        <postStartupActivity implementation="com.incredibuild.ibplugin.analytics.AnalyticsStartupActivity"/>
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.incredibuild.ibplugin.settings.IncredibuildConfigurable"
+                id="com.incredibuild.ibplugin.settings.IncredibuildConfigurable"
+                displayName="Incredibuild"/>
     </extensions>
+
+    <actions>
+        <group id="Incredibuild.Menu" text="Incredibuild" popup="true" icon="/icons/incredibuild.svg">
+            <add-to-group group-id="MainMenu" anchor="after" relative-to-action="BuildMenu"/>
+
+            <action id="Incredibuild.BuildProject"
+                    class="com.incredibuild.ibplugin.actions.BuildProjectWithIncredibuildAction"
+                    text="Build"
+                    description="Build the whole Cargo workspace through Incredibuild"
+                    icon="/icons/incredibuild.svg"/>
+
+            <action id="Incredibuild.RebuildProject"
+                    class="com.incredibuild.ibplugin.actions.RebuildProjectWithIncredibuildAction"
+                    text="Rebuild"
+                    description="Clean and rebuild the whole Cargo workspace through Incredibuild"
+                    icon="/icons/incredibuild.svg"/>
+
+            <action id="Incredibuild.RunWithIncredibuild"
+                    class="com.incredibuild.ibplugin.actions.RunWithIncredibuildAction"
+                    text="Build Selected Run Configuration"
+                    description="Run the currently selected Cargo run configuration through Incredibuild"
+                    icon="/icons/incredibuild.svg"/>
+
+            <separator/>
+
+            <action id="Incredibuild.StopBuild"
+                    class="com.incredibuild.ibplugin.actions.StopBuildAction"
+                    text="Stop Build"
+                    description="Stop the currently running build or clean process"
+                    icon="/icons/incredibuild.svg"/>
+        </group>
+    </actions>
 </idea-plugin>
