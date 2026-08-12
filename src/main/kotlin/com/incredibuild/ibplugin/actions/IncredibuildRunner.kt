@@ -41,7 +41,7 @@ private const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrati
 private const val INCREDIBUILD_DOWNLOAD_PAGE =
     "https://docs.incredibuild.com/site-landing/download-docs-center"
 
-private const val MINIMUM_RUST_BUILD_VERSION = "10.38.0.0"
+private const val MINIMUM_RUST_BUILD_VERSION = "10.37.0.0"
 
 /**
  * Shared plumbing for locating Incredibuild, launching BuildConsole (or a plain
@@ -138,6 +138,8 @@ object IncredibuildRunner {
                 }
 
                 val profilePath = File(installFolder, "Profiles${File.separator}rust.ib_profile.xml")
+                val buildCacheProfilePath =
+                    File(installFolder, "BuildCache Profiles${File.separator}BuildCache_profile_rust.xml")
 
                 // BuildConsole needs "/profile=" and "/command=" with quotes around just the
                 // value. Building that directly via GeneralCommandLine hits a real bug: its
@@ -156,7 +158,8 @@ object IncredibuildRunner {
                     "& \"${buildConsolePath.absolutePath}\" " +
                         "${powerShellSingleQuoted("/profile=\"${profilePath.absolutePath}\"")} " +
                         "${powerShellSingleQuoted("/command=\"$cargoCommand\"")} " +
-                        "${powerShellSingleQuoted("/title=\"${project.name}\"")}\n" +
+                        "${powerShellSingleQuoted("/title=\"${project.name}\"")} " +
+                        "${powerShellSingleQuoted("/BuildCacheProfile=\"${buildCacheProfilePath.absolutePath}\"")}\n" +
                         "exit \$LASTEXITCODE\n"
                 )
 
