@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.bundling.Zip
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
@@ -36,6 +37,15 @@ dependencies {
 
 tasks.named("buildPlugin", Zip::class) {
     archiveFileName.set("intellij-ib-plugin.zip")
+}
+
+// Gradle's Jar/Zip tasks default every entry to a fixed 1980-02-01 placeholder
+// timestamp instead of the file's real modification time, so identical source
+// produces byte-identical archives (reproducible builds/build caching). That
+// makes every .class/.jar entry inside the plugin zip show that placeholder
+// date instead of when it was actually built - preserve real timestamps instead.
+tasks.withType<AbstractArchiveTask>().configureEach {
+    isPreserveFileTimestamps = true
 }
 
 // Compiled against com.jetbrains.rust 262.8665.323 (2026.2 line), but the specific APIs this
