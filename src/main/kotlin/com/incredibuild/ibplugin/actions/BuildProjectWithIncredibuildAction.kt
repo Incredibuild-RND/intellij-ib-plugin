@@ -32,6 +32,6 @@ class BuildProjectWithIncredibuildAction : AnAction() {
         val project = e.project ?: return
         val workingDirectory = project.basePath ?: return
         val jobCount = IncredibuildSettings.getInstance().jobCount
-        IncredibuildRunner.buildViaIncredibuild(project, "cargo build -j $jobCount", workingDirectory, "build")
+        IncredibuildRunner.buildViaIncredibuild(project, "cargo build -j $jobCount --all --all-targets", workingDirectory, "build")
     }
 }
