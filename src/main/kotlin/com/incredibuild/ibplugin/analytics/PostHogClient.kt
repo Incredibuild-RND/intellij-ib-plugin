@@ -20,6 +20,7 @@ import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.util.SystemInfo
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -158,6 +159,15 @@ object PostHogClient {
         allProperties["ideName"] = ApplicationInfo.getInstance().versionName
         allProperties["ideBuild"] = ApplicationInfo.getInstance().build.asString()
         allProperties["os"] = System.getProperty("os.name")
+        // Normalized, filter/group-friendly alongside the raw "os" string above -
+        // e.g. distinguishing the Windows vs Linux Incredibuild integration in
+        // PostHog dashboards without parsing free-form OS name strings.
+        allProperties["platform"] = when {
+            SystemInfo.isWindows -> "windows"
+            SystemInfo.isLinux -> "linux"
+            SystemInfo.isMac -> "macos"
+            else -> "other"
+        }
         allProperties.putAll(properties)
 
         val payload = linkedMapOf<String, Any?>(

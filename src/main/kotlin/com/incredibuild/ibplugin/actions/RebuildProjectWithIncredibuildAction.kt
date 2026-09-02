@@ -26,9 +26,12 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.util.SystemInfo
 import com.incredibuild.ibplugin.settings.IncredibuildSettings
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import java.io.File
+
+private val CARGO_EXECUTABLE_NAME = if (SystemInfo.isWindows) "cargo.exe" else "cargo"
 
 /**
  * Cleans the whole Cargo workspace (plain "cargo clean", not accelerated -
@@ -49,14 +52,16 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
                 // Checked before "cargo clean" runs, not after: that step deletes the
                 // existing build output, so finding out only afterwards that Incredibuild
                 // is missing or too old would leave the user with nothing built at all.
-                if (IncredibuildRunner.ensureIncredibuildReady(project, "rebuild") == null) return
+                // The resolved folder is threaded through to startClean/buildViaIncredibuild
+                // below so this check never runs a second time for the same Rebuild.
+                val installFolder = IncredibuildRunner.ensureIncredibuildReady(project, "rebuild") ?: return
 
                 val cargoExecutable = resolveCargoExecutable(project)
                 if (cargoExecutable == null) {
                     ApplicationManager.getApplication().invokeLater {
                         Messages.showErrorDialog(
                             project,
-                            "Could not find cargo. Checked the configured Rust toolchain and ~/.cargo/bin/cargo.exe.",
+                            "Could not find cargo. Checked the configured Rust toolchain and ~/.cargo/bin/$CARGO_EXECUTABLE_NAME.",
                             "Incredibuild"
                         )
                     }
@@ -64,7 +69,7 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
                 }
 
                 ApplicationManager.getApplication().invokeLater {
-                    startClean(project, cargoExecutable, workingDirectory)
+                    startClean(project, installFolder, cargoExecutable, workingDirectory)
                 }
             }
         })
@@ -86,7 +91,7 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
             }
         }
 
-        val defaultCargo = File(System.getProperty("user.home"), ".cargo${File.separator}bin${File.separator}cargo.exe")
+        val defaultCargo = File(System.getProperty("user.home"), ".cargo${File.separator}bin${File.separator}$CARGO_EXECUTABLE_NAME")
         if (defaultCargo.exists()) {
             return defaultCargo.absolutePath
         }
@@ -94,11 +99,11 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
         return null
     }
 
-    private fun startClean(project: Project, cargoExecutable: String, workingDirectory: String) {
+    private fun startClean(project: Project, installFolder: File, cargoExecutable: String, workingDirectory: String) {
         val cleanCommandLine = GeneralCommandLine(cargoExecutable, "clean").withWorkDirectory(workingDirectory)
         val jobCount = IncredibuildSettings.getInstance().jobCount
         IncredibuildRunner.run(project, cleanCommandLine, "Cargo Clean") {
-            IncredibuildRunner.buildViaIncredibuild(project, "cargo build -j $jobCount", workingDirectory, "rebuild")
+            IncredibuildRunner.buildViaIncredibuild(project, installFolder, "cargo build -j $jobCount --all --all-targets", workingDirectory, "rebuild")
         }
     }
 }

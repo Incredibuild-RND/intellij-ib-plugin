@@ -27,7 +27,7 @@ import com.intellij.openapi.components.Storage
 class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State> {
 
     class State {
-        var jobCount: Int = 64
+        var jobCount: Int = 300
     }
 
     private var state = State()

@@ -30,14 +30,14 @@
 
             <action id="Incredibuild.BuildProject"
                     class="com.incredibuild.ibplugin.actions.BuildProjectWithIncredibuildAction"
-                    text="Build"
-                    description="Build the whole Cargo workspace through Incredibuild"
+                    text="Build All"
+                    description="Build every target (lib, bins, examples, tests, benches) in the whole Cargo workspace through Incredibuild"
                     icon="/icons/incredibuild.svg"/>
 
             <action id="Incredibuild.RebuildProject"
                     class="com.incredibuild.ibplugin.actions.RebuildProjectWithIncredibuildAction"
-                    text="Rebuild"
-                    description="Clean and rebuild the whole Cargo workspace through Incredibuild"
+                    text="Rebuild All"
+                    description="Clean and rebuild every target (lib, bins, examples, tests, benches) in the whole Cargo workspace through Incredibuild"
                     icon="/icons/incredibuild.svg"/>
 
             <action id="Incredibuild.RunWithIncredibuild"
