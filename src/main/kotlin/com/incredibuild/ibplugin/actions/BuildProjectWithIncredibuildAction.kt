@@ -18,7 +18,6 @@ package com.incredibuild.ibplugin.actions
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.incredibuild.ibplugin.settings.IncredibuildSettings
 
 /**
  * Builds the whole Cargo workspace through Incredibuild, independent of any
@@ -30,8 +29,9 @@ class BuildProjectWithIncredibuildAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val workingDirectory = project.basePath ?: return
-        val jobCount = IncredibuildSettings.getInstance().jobCount
-        IncredibuildRunner.buildViaIncredibuild(project, "cargo build -j $jobCount --all --all-targets", workingDirectory, "build")
+        // The invocation is resolved on the background thread inside buildViaIncredibuild:
+        // deriving it resolves the selected run configuration against the Cargo project
+        // model, which must not happen here on the EDT.
+        IncredibuildRunner.buildViaIncredibuild(project, "build") { deriveCargoInvocation(project) }
     }
 }

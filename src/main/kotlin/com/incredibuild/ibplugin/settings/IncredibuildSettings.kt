@@ -28,6 +28,13 @@ class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State
 
     class State {
         var jobCount: Int = 300
+
+        // Opt-in, and deliberately defaulted off: when enabled, the plugin takes over the
+        // IDE's own build actions (Build Project, and the build phase that Run/Test kick
+        // off), which changes what a standard IDE command does. The Incredibuild menu
+        // actions are unaffected by this flag - those always accelerate, since the user
+        // asked for Incredibuild by name.
+        var accelerateIdeBuilds: Boolean = false
     }
 
     private var state = State()
@@ -42,6 +49,12 @@ class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State
         get() = state.jobCount
         set(value) {
             state.jobCount = value
+        }
+
+    var accelerateIdeBuilds: Boolean
+        get() = state.accelerateIdeBuilds
+        set(value) {
+            state.accelerateIdeBuilds = value
         }
 
     companion object {
