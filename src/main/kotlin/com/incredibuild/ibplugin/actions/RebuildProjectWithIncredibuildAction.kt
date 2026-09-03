@@ -27,7 +27,6 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.SystemInfo
-import com.incredibuild.ibplugin.settings.IncredibuildSettings
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import java.io.File
 
@@ -68,8 +67,14 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
                     return
                 }
 
+                // Derived here, on the background thread, for the same reason the cargo
+                // lookup above is: it resolves the selected run configuration against the
+                // Cargo project model. Derived before the clean rather than after, so the
+                // command reflects the state the user saw when they triggered the rebuild.
+                val invocation = deriveCargoInvocation(project)
+
                 ApplicationManager.getApplication().invokeLater {
-                    startClean(project, installFolder, cargoExecutable, workingDirectory)
+                    startClean(project, installFolder, cargoExecutable, workingDirectory, invocation)
                 }
             }
         })
@@ -99,11 +104,25 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
         return null
     }
 
-    private fun startClean(project: Project, installFolder: File, cargoExecutable: String, workingDirectory: String) {
+    private fun startClean(
+        project: Project,
+        installFolder: File,
+        cargoExecutable: String,
+        workingDirectory: String,
+        invocation: CargoInvocation
+    ) {
         val cleanCommandLine = GeneralCommandLine(cargoExecutable, "clean").withWorkDirectory(workingDirectory)
-        val jobCount = IncredibuildSettings.getInstance().jobCount
-        IncredibuildRunner.run(project, cleanCommandLine, "Cargo Clean") {
-            IncredibuildRunner.buildViaIncredibuild(project, installFolder, "cargo build -j $jobCount --all --all-targets", workingDirectory, "rebuild")
+        // The clean's exit code is deliberately ignored: "cargo clean" reports failure for
+        // benign reasons (e.g. a target directory that was already absent), and refusing to
+        // build afterwards would be a worse outcome than simply building.
+        IncredibuildRunner.run(project, cleanCommandLine, "Cargo Clean") { _ ->
+            IncredibuildRunner.buildViaIncredibuild(
+                project,
+                installFolder,
+                invocation.command,
+                invocation.workingDirectory,
+                "rebuild"
+            )
         }
     }
 }

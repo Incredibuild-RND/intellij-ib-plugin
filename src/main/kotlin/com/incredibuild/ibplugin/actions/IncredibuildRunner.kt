@@ -18,6 +18,7 @@ package com.incredibuild.ibplugin.actions
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.impl.ConsoleViewImpl
 import com.intellij.execution.process.ColoredProcessHandler
+import com.intellij.execution.process.KillableProcessHandler
 import com.intellij.execution.process.OSProcessHandler
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
@@ -46,14 +47,14 @@ private const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrati
 private const val INCREDIBUILD_DOWNLOAD_PAGE =
     "https://docs.incredibuild.com/site-landing/download-docs-center"
 
-private const val MINIMUM_RUST_BUILD_VERSION = "10.37.0.0"
+private const val MINIMUM_RUST_BUILD_VERSION = "10.37.1"
 
 // The Linux team found an issue with an earlier released Linux Incredibuild
 // version during RustRover integration testing, hence this gate. Deliberately a
 // separate constant, not shared with the Windows one: Windows and Linux
 // Incredibuild use entirely unrelated version-numbering schemes (e.g.
 // "10.37.0.12597" vs "3.18.0").
-private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.4"
+private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
 
 /**
  * Shared plumbing for locating Incredibuild, launching BuildConsole (or a plain
@@ -147,6 +148,21 @@ object IncredibuildRunner {
     }
 
     /**
+     * As above, but with the invocation resolved inside the background task rather than by
+     * the caller - [deriveCargoInvocation] reads the Cargo project model and resolves the
+     * selected run configuration, neither of which may happen on the EDT where actions run.
+     */
+    internal fun buildViaIncredibuild(project: Project, actionType: String, invocation: () -> CargoInvocation) {
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Locating Incredibuild") {
+            override fun run(indicator: ProgressIndicator) {
+                val installFolder = ensureIncredibuildReady(project, actionType) ?: return
+                val resolved = invocation()
+                buildViaIncredibuild(project, installFolder, resolved.command, resolved.workingDirectory, actionType)
+            }
+        })
+    }
+
+    /**
      * Launches the build directly against an already-resolved, already-verified
      * install folder, skipping [ensureIncredibuildReady] entirely. Exposed so
      * [RebuildProjectWithIncredibuildAction] - which must call
@@ -159,29 +175,54 @@ object IncredibuildRunner {
         installFolder: File,
         cargoCommand: String,
         workingDirectory: String,
-        actionType: String
+        actionType: String,
+        onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
-        if (SystemInfo.isLinux) {
-            buildViaIncredibuildLinux(project, installFolder, cargoCommand, workingDirectory, actionType)
-        } else {
-            buildViaIncredibuildWindows(project, installFolder, cargoCommand, workingDirectory, actionType)
+        when (val prepared = prepareBuild(project, installFolder, cargoCommand, workingDirectory)) {
+            is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
+            is PreparedBuild.Ready -> launchBuild(project, prepared.commandLine, actionType) { exitCode ->
+                prepared.cleanUp()
+                onFinished?.invoke(exitCode)
+            }
         }
     }
 
-    private fun buildViaIncredibuildWindows(
+    /**
+     * An Incredibuild command line that is ready to launch, or the reason one could not be
+     * built. Kept separate from launching it so the same command can either be streamed
+     * into our own tool window (the Incredibuild menu actions) or handed to the IDE's build
+     * pipeline (see [IncredibuildProjectTaskRunner]) - and so a missing binary can be
+     * reported with a dialog in the first case and silently declined in the second.
+     */
+    internal sealed interface PreparedBuild {
+        /** [cleanUp] deletes the temporary wrapper script, and must run once the process exits. */
+        class Ready(val commandLine: GeneralCommandLine, val cleanUp: () -> Unit) : PreparedBuild
+        class Failed(val message: String) : PreparedBuild
+    }
+
+    internal fun prepareBuild(
         project: Project,
         installFolder: File,
         cargoCommand: String,
-        workingDirectory: String,
-        actionType: String
-    ) {
+        workingDirectory: String
+    ): PreparedBuild =
+        if (SystemInfo.isLinux) {
+            prepareBuildLinux(project, installFolder, cargoCommand, workingDirectory)
+        } else {
+            prepareBuildWindows(project, installFolder, cargoCommand, workingDirectory)
+        }
+
+    private fun prepareBuildWindows(
+        project: Project,
+        installFolder: File,
+        cargoCommand: String,
+        workingDirectory: String
+    ): PreparedBuild {
         val buildConsolePath = File(installFolder, "BuildConsole.exe")
         if (!buildConsolePath.exists()) {
-            showErrorOnEdt(
-                project,
+            return PreparedBuild.Failed(
                 "BuildConsole.exe was not found in the Incredibuild install folder:\n${installFolder.absolutePath}"
             )
-            return
         }
 
         val profilePath = File(installFolder, "Profiles${File.separator}rust.ib_profile.xml")
@@ -214,7 +255,7 @@ object IncredibuildRunner {
             .withParameters("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.absolutePath)
             .withWorkDirectory(workingDirectory)
 
-        launchBuild(project, commandLine, actionType) { scriptFile.delete() }
+        return PreparedBuild.Ready(commandLine) { scriptFile.delete() }
     }
 
     /**
@@ -244,20 +285,17 @@ object IncredibuildRunner {
      *    `/STOP`-style mechanism exists on Linux at all (nor does ib_console print
      *    one), so this is the only cancellation mechanism available.
      */
-    private fun buildViaIncredibuildLinux(
+    private fun prepareBuildLinux(
         project: Project,
         installFolder: File,
         cargoCommand: String,
-        workingDirectory: String,
-        actionType: String
-    ) {
+        workingDirectory: String
+    ): PreparedBuild {
         val consolePath = File(installFolder, "bin/ib_console")
         if (!consolePath.exists()) {
-            showErrorOnEdt(
-                project,
+            return PreparedBuild.Failed(
                 "ib_console was not found in the Incredibuild install folder:\n${installFolder.absolutePath}"
             )
-            return
         }
 
         val profilePath = File(installFolder, "data/custom_profiles/rustrover/ib_profile.xml")
@@ -313,14 +351,14 @@ object IncredibuildRunner {
             // cargo's own source the way the ib_console flags above were.
             .withEnvironment("CARGO_TERM_HYPERLINKS", "false")
 
-        launchBuild(project, commandLine, actionType) { scriptFile.delete() }
+        return PreparedBuild.Ready(commandLine) { scriptFile.delete() }
     }
 
     private fun launchBuild(
         project: Project,
         commandLine: GeneralCommandLine,
         actionType: String,
-        onFinished: () -> Unit
+        onFinished: (exitCode: Int) -> Unit
     ) {
         PostHogClient.capture("build_started", mapOf("action" to actionType))
         PostHogClient.captureOnce(
@@ -351,17 +389,18 @@ object IncredibuildRunner {
 
     /**
      * Runs [commandLine], streaming its output into the Incredibuild tool window.
-     * If [onFinished] is given, it runs after the process terminates (used to chain
-     * a plain "cargo clean" into an Incredibuild-accelerated build for Rebuild).
+     * If [onFinished] is given, it runs after the process terminates, with the process's
+     * exit code - used both to chain a plain "cargo clean" into an Incredibuild-accelerated
+     * build for Rebuild, and to report build success back to the IDE's build pipeline when
+     * the build was started from there (see [IncredibuildProjectTaskRunner]).
      */
-    fun run(project: Project, commandLine: GeneralCommandLine, contentName: String, onFinished: (() -> Unit)? = null) {
-        // ColoredProcessHandler (not plain OSProcessHandler): decodes ANSI SGR escape
-        // codes in the process's output into real ConsoleView coloring. Without it,
-        // cargo's CARGO_TERM_COLOR=always output shows the raw escape sequences as
-        // literal text instead of color, since nothing is interpreting them.
-        val processHandler = ColoredProcessHandler(commandLine)
-        activeProcessHandler = processHandler
-        activeBuildId = null
+    fun run(
+        project: Project,
+        commandLine: GeneralCommandLine,
+        contentName: String,
+        onFinished: ((exitCode: Int) -> Unit)? = null
+    ) {
+        val processHandler = createProcessHandler(commandLine)
 
         val console = ConsoleViewImpl(project, true)
         console.attachToProcess(processHandler)
@@ -373,6 +412,42 @@ object IncredibuildRunner {
         val content = toolWindow.contentManager.factory.createContent(console.component, contentName, false)
         toolWindow.contentManager.addContent(content)
         toolWindow.show()
+
+        if (onFinished != null) {
+            processHandler.addProcessListener(object : ProcessListener {
+                override fun processTerminated(event: ProcessEvent) {
+                    val exitCode = event.exitCode
+                    ApplicationManager.getApplication().invokeLater { onFinished(exitCode) }
+                }
+            })
+        }
+        processHandler.startNotify()
+    }
+
+    /**
+     * The process handler to run any Incredibuild build with, registered as the active one
+     * so [stopActiveProcess] can find it.
+     *
+     * Exposed so the IDE's build pipeline uses the same handler
+     * ([IncredibuildProjectTaskRunner]) rather than a plain one. That matters twice over:
+     * the Incredibuild menu's Stop Build can only act on a build it knows about, and the
+     * Build tool window's own stop button calls [OSProcessHandler.destroyProcess], which
+     * this handler turns into Incredibuild's graceful cancellation instead of a kill.
+     *
+     * Note the handler is returned unstarted - callers start it, or in the build-pipeline
+     * case `CargoBuildAdapter.attachToProcessHandler` does.
+     */
+    internal fun createProcessHandler(
+        commandLine: GeneralCommandLine,
+        decodeAnsiColors: Boolean = true
+    ): OSProcessHandler {
+        val processHandler = if (decodeAnsiColors) {
+            ColoredIncredibuildProcessHandler(commandLine)
+        } else {
+            RawIncredibuildProcessHandler(commandLine)
+        }
+        activeProcessHandler = processHandler
+        activeBuildId = null
 
         processHandler.addProcessListener(object : ProcessListener {
             override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
@@ -387,12 +462,80 @@ object IncredibuildRunner {
                     activeProcessHandler = null
                     activeBuildId = null
                 }
-                if (onFinished != null) {
-                    ApplicationManager.getApplication().invokeLater { onFinished() }
-                }
             }
         })
-        processHandler.startNotify()
+        return processHandler
+    }
+
+    /**
+     * A build's handler for our own tool window, which decodes cargo's ANSI escape codes
+     * into real console coloring - a [ConsoleViewImpl] is attached to it there, and reads
+     * the color off the output type.
+     *
+     * [destroyProcessImpl] is overridden rather than only handling stops from our own menu
+     * action, because the IDE's build tool window has its own stop button:
+     * `ExecutionManagerImpl.stopProcess` calls `destroyProcess()` on it, and the default
+     * implementation would kill the process - which Incredibuild reports as a crashed build
+     * rather than a cancelled one.
+     */
+    private class ColoredIncredibuildProcessHandler(
+        commandLine: GeneralCommandLine
+    ) : ColoredProcessHandler(commandLine) {
+
+        override fun destroyProcessImpl() {
+            if (!requestGracefulStop()) super.destroyProcessImpl()
+        }
+    }
+
+    /**
+     * A build's handler for the IDE's Build tool window, which deliberately does *not*
+     * decode ANSI escape codes.
+     *
+     * `CargoBuildAdapterBase.onTextAvailable` forwards only `event.text` and discards the
+     * output type, so the codes have to survive *in the text* for the build console to
+     * color it - decoding them here would strip them and leave plain text. This mirrors the
+     * Rust plugin's own handler, which builds its decoder as
+     * `if (processColors && !hasPty) RsAnsiEscapeDecoder() else null` and which
+     * `CargoBuildManager.build` deliberately constructs with processColors=false.
+     *
+     * Extends KillableProcessHandler (which does no decoding) because
+     * ColoredProcessHandler's `notifyTextAvailable` is final and always decodes. That makes
+     * this one a `KillableProcess`, so `ExecutionManagerImpl.stopProcess` can also reach
+     * `killProcess` - hence both stop entry points are made graceful.
+     */
+    private class RawIncredibuildProcessHandler(
+        commandLine: GeneralCommandLine
+    ) : KillableProcessHandler(commandLine) {
+
+        override fun destroyProcessImpl() {
+            if (!requestGracefulStop()) super.destroyProcessImpl()
+        }
+
+        override fun killProcess() {
+            if (!requestGracefulStop()) super.killProcess()
+        }
+    }
+
+    /**
+     * Asks Incredibuild to cancel the running build by build-id, returning false if there
+     * is no build-id to cancel by or the request could not be dispatched - in which case
+     * the caller must fall back to terminating the process.
+     *
+     * Runs synchronously: it is called from stop handling, which must not report the
+     * process as stopped before the cancellation has actually been sent.
+     */
+    private fun requestGracefulStop(): Boolean {
+        val buildId = activeBuildId ?: return false
+        return try {
+            val installFolder = IncredibuildLocator.findInstallFolder() ?: return false
+            val buildConsolePath = File(installFolder, "BuildConsole.exe")
+            if (!buildConsolePath.exists()) return false
+            val stopCommandLine = GeneralCommandLine(buildConsolePath.absolutePath, "/STOP={$buildId}")
+            ExecUtil.execAndGetOutput(stopCommandLine)
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /**
@@ -429,25 +572,11 @@ object IncredibuildRunner {
             return
         }
 
-        val buildId = activeBuildId
-        if (buildId == null) {
-            handler.destroyProcess()
-            return
-        }
-
-        ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                val installFolder = IncredibuildLocator.findInstallFolder()
-                val buildConsolePath = installFolder?.let { File(it, "BuildConsole.exe") }
-                if (buildConsolePath != null && buildConsolePath.exists()) {
-                    val stopCommandLine = GeneralCommandLine(buildConsolePath.absolutePath, "/STOP={$buildId}")
-                    ExecUtil.execAndGetOutput(stopCommandLine)
-                } else {
-                    ApplicationManager.getApplication().invokeLater { handler.destroyProcess() }
-                }
-            } catch (e: Exception) {
-                ApplicationManager.getApplication().invokeLater { handler.destroyProcess() }
-            }
-        }
+        // destroyProcess() rather than a cancellation request built here: the handler
+        // itself turns this into Incredibuild's graceful stop where one is possible (see
+        // [IncredibuildProcessHandler]), which keeps this action and the build tool
+        // window's own stop button behaving identically. Dispatched off the EDT because
+        // the graceful path shells out to BuildConsole.
+        ApplicationManager.getApplication().executeOnPooledThread { handler.destroyProcess() }
     }
 }
