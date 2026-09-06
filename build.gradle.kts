@@ -56,6 +56,15 @@ intellijPlatform {
     pluginConfiguration {
         ideaVersion {
             sinceBuild.set("261")
+            // Capped at the 262 line because com.jetbrains.rust - which this plugin declares
+            // as a mandatory dependency, and without which the IDE will not load it at all -
+            // ships pinned to one IDE line at a time (the build we compile against declares
+            // since-build="262.8665" until-build="262.*"). Leaving this open-ended claimed
+            // compatibility with IDEs where that plugin does not exist, which is what made
+            // the Plugin Verifier report "com.jetbrains.rust: Unavailable" against IU-263 and
+            // then, as a consequence, every org.rust class as missing. Raise this in step with
+            // a Rust plugin release for the newer line, not before.
+            untilBuild.set("262.*")
         }
     }
 }

@@ -11,27 +11,44 @@ Incredibuild is a build acceleration tool that distributes compilation work acro
 multiple machines on your network (or in the cloud), cutting build times without requiring any changes
 to your code or project structure.
 
-**Currently supports Windows only.**
-
 ## Features
 
 The **Incredibuild** menu (next to **Build** in the main menu bar) provides:
 
-- **Build** - builds the whole Cargo workspace through Incredibuild
-- **Rebuild** - cleans the workspace, then builds it through Incredibuild
-- **Build Selected Run Configuration** - runs the currently selected Cargo run configuration through Incredibuild
-- **Stop Build** - stops whichever build or clean process is currently running
+- **Build** - builds whatever the IDE's own **Build Project** would build, through Incredibuild
+- **Rebuild** - cleans the Cargo workspace first, then builds it
+- **Stop Build** - cancels the build in progress
 
-The number of parallel jobs (`-j`) Incredibuild uses is configurable under
-**Settings/Preferences > Tools > Incredibuild**.
+The accelerated build runs the same cargo command the IDE itself would have run, so the selected run
+configuration, build profile and target selection are all respected.
+
+### Accelerating the IDE's own build actions
+
+The IDE's build actions can be accelerated too. Turn on **Accelerate the IDE's own build actions**
+under **Settings/Preferences > Tools > Incredibuild**, and **Build Project** - along with the build
+that runs before **Run** and **Test** - goes through Incredibuild, reporting into the IDE's own
+**Build** tool window. The commands and keyboard shortcuts stay exactly where they are.
+
+The setting is off by default. While it is off - or if Incredibuild isn't installed on the machine -
+those actions behave exactly as they do without this plugin. The actions in the **Incredibuild** menu
+always use Incredibuild, whichever way the setting is set.
+
+### Settings
+
+**Settings/Preferences > Tools > Incredibuild** configures the number of parallel jobs (`-j`)
+accelerated builds request, and the opt-in above.
 
 If Incredibuild isn't installed on the machine, the menu commands offer to open
 [incredibuild.com](https://www.incredibuild.com/) to download it.
 
 ## Requirements
 
-- RustRover, or IntelliJ IDEA Ultimate with the Rust plugin (build 261 / 2026.1 or later)
-- [Incredibuild](https://www.incredibuild.com/) installed on Windows
+- RustRover, or IntelliJ IDEA Ultimate with the Rust plugin - 2026.1 or 2026.2 (builds 261-262).
+  The Rust plugin is released for one IDE line at a time, and this plugin depends on it, so support
+  for a newer line follows a Rust plugin release for it.
+- [Incredibuild](https://www.incredibuild.com/) installed, on Windows or Linux:
+  - Windows: 10.37.1 or later
+  - Linux: 4.29.3 or later, installed under `/opt/incredibuild`
 
 ## Installation
 
