@@ -2,7 +2,7 @@
 <idea-plugin>
     <id>com.incredibuild.ibplugin</id>
     <name>Incredibuild Build Acceleration</name>
-    <vendor>Incredibuild</vendor>
+    <vendor url="https://www.incredibuild.com" email="support@incredibuild.com">Incredibuild</vendor>
     <description><![CDATA[
         <p><b>Incredibuild Build Acceleration</b> builds your Rust/Cargo project through Incredibuild directly from RustRover (or IntelliJ IDEA with the Rust plugin).</p>
         <p>Incredibuild is a build acceleration tool that distributes compilation work across the free cores of multiple machines on your network (or in the cloud), cutting build times without requiring any changes to your code or project structure.</p>

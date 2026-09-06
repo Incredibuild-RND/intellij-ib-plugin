@@ -72,6 +72,12 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
      * overload below). Declining here keeps this runner out of any other platform code
      * path that asks the question without a context, where the opt-in setting and the
      * Rust plugin's own opinion of the task can't be consulted.
+     *
+     * Overriding it is deprecated and the Plugin Verifier flags it as scheduled for
+     * removal, but it cannot be dropped while this plugin supports 2026.1: the method is
+     * abstract in build 261 and only became concrete in 262, so a class without it would
+     * fail to instantiate on the older IDE. Remove this override when sinceBuild reaches
+     * 262.
      */
     override fun canRun(projectTask: ProjectTask): Boolean = false
 

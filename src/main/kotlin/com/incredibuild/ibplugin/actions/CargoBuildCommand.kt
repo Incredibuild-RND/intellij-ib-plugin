@@ -17,7 +17,7 @@ package com.incredibuild.ibplugin.actions
 
 import com.intellij.execution.ExecutionTargetManager
 import com.intellij.execution.RunManager
-import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.registry.Registry
@@ -185,7 +185,7 @@ internal data class CargoInvocation(val command: String, val workingDirectory: S
 internal fun deriveCargoInvocation(project: Project): CargoInvocation {
     val jobCount = IncredibuildSettings.getInstance().jobCount
     return try {
-        runReadAction {
+        ReadAction.compute<CargoInvocation?, Throwable> {
             val selected = RunManager.getInstance(project).selectedConfiguration?.configuration
             val cargoConfiguration = selected as? CargoCommandConfiguration
             val buildConfiguration = cargoConfiguration?.let { CargoBuildManager.getBuildConfiguration(it) }
@@ -210,7 +210,7 @@ internal fun cargoInvocationForConfiguration(
 ): ResolvedCargoBuild? {
     val jobCount = IncredibuildSettings.getInstance().jobCount
     return try {
-        runReadAction { resolveCargoBuild(configuration, jobCount, project) }
+        ReadAction.compute<ResolvedCargoBuild?, Throwable> { resolveCargoBuild(configuration, jobCount, project) }
     } catch (e: Exception) {
         LOG.warn("Could not resolve the cargo command for ${configuration.name}", e)
         null
