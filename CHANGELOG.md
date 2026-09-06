@@ -2,6 +2,8 @@
 
 # Incredibuild Build Acceleration Changelog
 
+## [Unreleased]
+
 ## [1.0.3]
 
 ### Added
