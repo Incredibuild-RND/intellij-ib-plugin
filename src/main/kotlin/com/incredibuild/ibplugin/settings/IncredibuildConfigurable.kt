@@ -24,7 +24,8 @@ import com.intellij.ui.dsl.builder.panel
 class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
 
     override fun createPanel() = panel {
-        row("Parallel jobs (-j):") {
+        // "-j" for a Cargo build, "--parallel" for a CMake one - same setting either way.
+        row("Parallel jobs:") {
             intTextField(1..999).bindIntText(IncredibuildSettings.getInstance()::jobCount)
         }
         row {

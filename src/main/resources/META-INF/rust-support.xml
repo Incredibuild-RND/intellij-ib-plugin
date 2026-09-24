@@ -1,0 +1,57 @@
+<!-- Loaded only when com.jetbrains.rust is present (see plugin.xml's optional <depends>) -
+     the Cargo/Rust-flavoured half of this plugin's Incredibuild integration. -->
+<idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- order="first" so this is consulted before the Rust plugin's own
+             CargoBuildTaskRunner: ProjectTaskManagerImpl assigns each task to the first
+             runner whose canRun accepts it, and this one only accepts when the user has
+             opted in (Settings > Tools > Incredibuild), declining to the Cargo build
+             otherwise. -->
+        <projectTaskRunner order="first"
+                           implementation="com.incredibuild.ibplugin.actions.IncredibuildProjectTaskRunner"/>
+    </extensions>
+
+    <actions>
+        <!-- anchor="first" against the (so far only-a-separator) Incredibuild.Menu group
+             declared in plugin.xml inserts this above that separator - Build ends up first,
+             pushing anything already there down. -->
+        <!-- Labelled "... Cargo Workspace" rather than a plain "Build"/"Rebuild": when the
+             CMake optional dependency below is *also* satisfied (e.g. CLion with the Rust
+             plugin installed too), both sets of actions land in the same Incredibuild menu,
+             and a bare "Build"/"Rebuild" from each would be indistinguishable there. -->
+        <action id="Incredibuild.BuildProject"
+                class="com.incredibuild.ibplugin.actions.BuildProjectWithIncredibuildAction"
+                text="Build Cargo Workspace"
+                description="Build the whole Cargo workspace through Incredibuild"
+                icon="/icons/incredibuild.svg">
+            <add-to-group group-id="Incredibuild.Menu" anchor="first"/>
+        </action>
+
+        <action id="Incredibuild.RebuildProject"
+                class="com.incredibuild.ibplugin.actions.RebuildProjectWithIncredibuildAction"
+                text="Rebuild Cargo Workspace"
+                description="Clean and rebuild the whole Cargo workspace through Incredibuild"
+                icon="/icons/incredibuild.svg">
+            <add-to-group group-id="Incredibuild.Menu" anchor="after" relative-to-action="Incredibuild.BuildProject"/>
+        </action>
+
+        <!-- Hidden for now, pending a decision on whether this action is needed at all.
+             RunWithIncredibuildAction is intentionally kept in the source tree rather than
+             deleted, so re-enabling it is just a matter of restoring this registration.
+             Note before re-enabling: it passes the run configuration's command through
+             verbatim, so for a "run" configuration it runs the binary and for a test
+             configuration it runs the tests, rather than only building them. RustRover's
+             own Build Project rewrites those first (a "run" command becomes "build", and
+             test/bench commands gain a no-run flag; see
+             CargoBuildManager.getBuildConfiguration), which this action would need to do
+             as well to match its "Build ..." label.
+        <action id="Incredibuild.RunWithIncredibuild"
+                class="com.incredibuild.ibplugin.actions.RunWithIncredibuildAction"
+                text="Build Selected Run Configuration"
+                description="Run the currently selected Cargo run configuration through Incredibuild"
+                icon="/icons/incredibuild.svg">
+            <add-to-group group-id="Incredibuild.Menu" anchor="after" relative-to-action="Incredibuild.RebuildProject"/>
+        </action>
+        -->
+    </actions>
+</idea-plugin>

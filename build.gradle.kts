@@ -30,6 +30,25 @@ dependencies {
     intellijPlatform {
         intellijIdeaUltimate("2026.2")
         plugin("com.jetbrains.rust", "262.8665.323")
+        // CMake ("CMake") and Native Build Tools ("com.intellij.clion") give us
+        // CMakeAppRunConfiguration/CMakeWorkspace/CMakeConfiguration and the
+        // CidrBuildTargetAction/CPPToolchains/CPPEnvironment/CPPBuildUtil family the CLion
+        // side of this plugin builds its cmake invocations with. Both are bundled in CLion but,
+        // like the Rust plugin, published separately on the Marketplace for other IDEs (here,
+        // installable into IntelliJ IDEA Ultimate via the "CLion C and C++" plugin) - pinned to
+        // the same 262.8665 branch as the Rust plugin dependency above for one consistent
+        // compile-time IDE line.
+        plugin("com.intellij.cmake", "262.8665.176")
+        plugin("com.intellij.clion", "262.8665.176")
+        // com.intellij.clion's own plugin.xml mandatorily depends on this (native debugging
+        // base classes, e.g. CidrRunConfiguration/CidrToolEnvironment/CidrBuildTarget that
+        // CMakeAppRunConfiguration/CPPEnvironment/CMakeTarget extend) - the Gradle plugin
+        // dependency mechanism does not pull a marketplace plugin's own transitive plugin
+        // dependencies onto the compile classpath automatically, so it has to be listed here
+        // too. No matching 262.8665 release exists for this one; the closest available build
+        // is used instead - fine for compiling against (Gradle just needs the class files),
+        // even though its own since-build is newer than the other two.
+        plugin("com.intellij.nativeDebug", "262.10315.125")
         bundledPlugin("intellij.testRunner.plugin")
         testFramework(TestFrameworkType.Platform)
     }
