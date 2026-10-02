@@ -15,12 +15,17 @@
  */
 package com.incredibuild.ibplugin.settings
 
+import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.options.BoundConfigurable
 import com.intellij.ui.dsl.builder.bindIntText
 import com.intellij.ui.dsl.builder.bindSelected
 import com.intellij.ui.dsl.builder.panel
 
-/** Settings > Tools > Incredibuild - the "-j" parallel job count and IDE build acceleration. */
+private val RUST_PLUGIN_ID = PluginId.getId("com.jetbrains.rust")
+
+/** Settings > Tools > Incredibuild - the "-j"/"--parallel" job count and (RustRover only)
+ * IDE build acceleration. */
 class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
 
     override fun createPanel() = panel {
@@ -28,6 +33,9 @@ class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
         row("Parallel jobs:") {
             intTextField(1..999).bindIntText(IncredibuildSettings.getInstance()::jobCount)
         }
+        // Only meaningful where the Rust plugin's own ProjectTaskRunner exists for this to
+        // stand in for (see rust-support.xml) - in CLion this checkbox would do nothing at
+        // all, so it's hidden there rather than shown as a dead setting.
         row {
             checkBox("Accelerate the IDE's own build actions")
                 .bindSelected(IncredibuildSettings.getInstance()::accelerateIdeBuilds)
@@ -37,6 +45,6 @@ class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
                         "When off, those actions behave exactly as they do without this plugin.<br>" +
                         "The actions in the <b>Incredibuild</b> menu always use Incredibuild, either way."
                 )
-        }
+        }.visible(PluginManagerCore.isLoaded(RUST_PLUGIN_ID))
     }
 }

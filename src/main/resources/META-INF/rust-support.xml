@@ -14,14 +14,17 @@
     <actions>
         <!-- anchor="first" against the (so far only-a-separator) Incredibuild.Menu group
              declared in plugin.xml inserts this above that separator - Build ends up first,
-             pushing anything already there down. -->
-        <!-- Labelled "... Cargo Workspace" rather than a plain "Build"/"Rebuild": when the
-             CMake optional dependency below is *also* satisfied (e.g. CLion with the Rust
-             plugin installed too), both sets of actions land in the same Incredibuild menu,
-             and a bare "Build"/"Rebuild" from each would be indistinguishable there. -->
+             pushing anything already there down.
+
+             Plain "Build"/"Rebuild" rather than "... Cargo Workspace": these and the CMake
+             optional dependency's actions below could in principle both be registered in the
+             same IDE, but each now hides itself via update() (see
+             BuildProjectWithIncredibuildAction/BuildCMakeTargetWithIncredibuildAction) unless
+             the open project actually has that kind of workspace, so in practice only one set
+             is ever visible for a given project at a time. -->
         <action id="Incredibuild.BuildProject"
                 class="com.incredibuild.ibplugin.actions.BuildProjectWithIncredibuildAction"
-                text="Build Cargo Workspace"
+                text="Build"
                 description="Build the whole Cargo workspace through Incredibuild"
                 icon="/icons/incredibuild.svg">
             <add-to-group group-id="Incredibuild.Menu" anchor="first"/>
@@ -29,7 +32,7 @@
 
         <action id="Incredibuild.RebuildProject"
                 class="com.incredibuild.ibplugin.actions.RebuildProjectWithIncredibuildAction"
-                text="Rebuild Cargo Workspace"
+                text="Rebuild"
                 description="Clean and rebuild the whole Cargo workspace through Incredibuild"
                 icon="/icons/incredibuild.svg">
             <add-to-group group-id="Incredibuild.Menu" anchor="after" relative-to-action="Incredibuild.BuildProject"/>

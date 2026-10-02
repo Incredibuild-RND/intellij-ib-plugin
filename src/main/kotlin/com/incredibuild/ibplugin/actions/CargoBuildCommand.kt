@@ -22,6 +22,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.registry.Registry
 import com.incredibuild.ibplugin.settings.IncredibuildSettings
+import org.rust.cargo.project.model.cargoProjectsIfCreated
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.profiles.CargoBuildProfile
@@ -164,6 +165,18 @@ private fun replacingCargoFlag(
 
 /** A cargo invocation to accelerate: the command to run and the directory to run it in. */
 internal data class CargoInvocation(val command: String, val workingDirectory: String)
+
+/**
+ * Whether [project] has a Cargo workspace at all - used to hide the Cargo-flavoured
+ * Incredibuild actions in a project that doesn't have one (e.g. a plain CMake project open in
+ * an IDE where the Rust plugin also happens to be installed).
+ *
+ * Reads [cargoProjectsIfCreated] rather than the plain (always-creating) `cargoProjects`
+ * extension property, so checking this from every action's `update()` never forces the Rust
+ * plugin's project-model service into existence for a project that never otherwise touches it.
+ */
+internal fun hasCargoWorkspace(project: Project): Boolean =
+    project.cargoProjectsIfCreated?.hasAtLeastOneValidProject == true
 
 /**
  * The cargo invocation to accelerate, taken from what RustRover's own Build Project would

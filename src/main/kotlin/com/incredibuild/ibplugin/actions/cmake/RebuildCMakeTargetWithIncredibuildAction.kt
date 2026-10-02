@@ -33,6 +33,10 @@ class RebuildCMakeTargetWithIncredibuildAction : AnAction() {
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
+    override fun update(e: AnActionEvent) {
+        e.presentation.isEnabledAndVisible = e.project?.let(::hasCMakeWorkspace) == true
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         IncredibuildRunner.buildCMakeViaIncredibuild(project, "cmake_rebuild", CMakeBuildKind.TARGET_REBUILD)

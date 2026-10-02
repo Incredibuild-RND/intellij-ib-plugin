@@ -27,6 +27,12 @@ class StopBuildAction : AnAction() {
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
+    override fun update(e: AnActionEvent) {
+        // Always visible (it's shared by both the Cargo and CMake action sets - see
+        // plugin.xml), just disabled when there's nothing to stop.
+        e.presentation.isEnabled = IncredibuildRunner.isBuildRunning()
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         IncredibuildRunner.stopActiveProcess(project)

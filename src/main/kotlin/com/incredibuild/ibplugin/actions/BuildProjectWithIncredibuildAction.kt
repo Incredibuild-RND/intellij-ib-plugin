@@ -27,6 +27,13 @@ class BuildProjectWithIncredibuildAction : AnAction() {
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
+    override fun update(e: AnActionEvent) {
+        // Hidden rather than just disabled: with both this and the CMake plugin's actions
+        // potentially registered in the same IDE (see rust-support.xml/cmake-support.xml),
+        // only the one matching the open project's actual workspace should ever show.
+        e.presentation.isEnabledAndVisible = e.project?.let(::hasCargoWorkspace) == true
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         // The invocation is resolved on the background thread inside buildViaIncredibuild:

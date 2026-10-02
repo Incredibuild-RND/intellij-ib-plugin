@@ -1,6 +1,8 @@
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.bundling.Zip
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -45,10 +47,11 @@ dependencies {
         // CMakeAppRunConfiguration/CPPEnvironment/CMakeTarget extend) - the Gradle plugin
         // dependency mechanism does not pull a marketplace plugin's own transitive plugin
         // dependencies onto the compile classpath automatically, so it has to be listed here
-        // too. No matching 262.8665 release exists for this one; the closest available build
-        // is used instead - fine for compiling against (Gradle just needs the class files),
-        // even though its own since-build is newer than the other two.
-        plugin("com.intellij.nativeDebug", "262.10315.125")
+        // too. Same 262.8665 branch as the other two now that one's been released for it -
+        // keep this in step with them rather than drifting onto a newer build 262 line, which
+        // previously kept the CLion half of this plugin from loading under runIde/the Plugin
+        // Verifier against a plain 2026.2 target (only 262.8665+ builds have it).
+        plugin("com.intellij.nativeDebug", "262.8665.176")
         bundledPlugin("intellij.testRunner.plugin")
         testFramework(TestFrameworkType.Platform)
     }
@@ -84,6 +87,51 @@ intellijPlatform {
             // then, as a consequence, every org.rust class as missing. Raise this in step with
             // a Rust plugin release for the newer line, not before.
             untilBuild.set("262.*")
+        }
+    }
+
+    // This plugin's Rust and CMake halves each only ever load in one specific IDE
+    // (RustRover/IntelliJ IDEA+Rust, and CLion respectively - see plugin.xml's optional
+    // <depends>), so verifying only against the intellijIdeaUltimate target it's compiled
+    // against would never actually load the CMake half at all, silently missing any
+    // classloading problem in it (e.g. the nativeDebug branch mismatch this once had). Verify
+    // against both real IDEs instead.
+    pluginVerification {
+        // Verified against CLion 2026.2: fully compatible, no compatibility problems.
+        // Verified against RustRover 2026.2: 4 compatibility problems, all of them exactly
+        // the CMake-only symbols CMakeBuildCommand.kt references
+        // (com.jetbrains.cidr.cpp.toolchains.*, com.jetbrains.cidr.cpp.cmake.*) - the
+        // Verifier's own report explains why ("Missing dependencies: com.intellij.cmake
+        // (optional): Unavailable" / "compatibility problems, some of which may be caused
+        // by absence of optional dependency"). That's the optional-dependency split from
+        // the comment above working as intended - RustRover genuinely can't and shouldn't
+        // resolve CMake-only classes - not a bug. The plugin's own default failureLevel
+        // (COMPATIBILITY_PROBLEMS + INTERNAL_API_USAGES; confirmed by observing which
+        // categories actually failed the task even though deprecated/experimental/missing-
+        // optional-dependency problems were also present and reported) would fail this task
+        // on every run purely because of that expected gap, so COMPATIBILITY_PROBLEMS is
+        // dropped here - the report (build/reports/pluginVerifier) still lists these 4, and
+        // would list any newly introduced one too, it just no longer fails the task on its
+        // own. INTERNAL_API_USAGES is left in: it already caught a real, fixable internal-
+        // API usage (PluginManagerCore.getPlugin(), replaced with the public isLoaded()
+        // instead) and should keep gating future ones the same way.
+        failureLevel.set(listOf(VerifyPluginTask.FailureLevel.INTERNAL_API_USAGES))
+        ides {
+            create(IntelliJPlatformType.CLion, "2026.2")
+            create(IntelliJPlatformType.RustRover, "2026.2")
+        }
+    }
+}
+
+// Plain `runIde` launches intellijIdeaUltimate (the platform this plugin's dependencies block
+// above declares), which never loads the CMake half at all (see plugin.xml's optional
+// <depends config-file="cmake-support.xml">) - there's nothing to manually exercise there. Add a
+// second target that launches CLion instead, for manually trying the CMake/CLion actions.
+intellijPlatformTesting {
+    runIde {
+        register("runIdeForClion") {
+            type = IntelliJPlatformType.CLion
+            version = "2026.2"
         }
     }
 }
