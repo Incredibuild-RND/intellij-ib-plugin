@@ -16,6 +16,7 @@
 package com.incredibuild.ibplugin.actions.cmake
 
 import com.incredibuild.ibplugin.actions.IncredibuildRunner
+import com.incredibuild.ibplugin.actions.disambiguatedLabel
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -34,7 +35,12 @@ class RebuildCMakeTargetWithIncredibuildAction : AnAction() {
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
-        e.presentation.isEnabledAndVisible = e.project?.let(::hasCMakeWorkspace) == true
+        val project = e.project
+        e.presentation.isEnabledAndVisible = project != null && hasCMakeWorkspace(project)
+        // See BuildProjectWithIncredibuildAction.update for why this is unconditional.
+        if (project != null && e.presentation.isEnabledAndVisible) {
+            e.presentation.text = disambiguatedLabel(project, "Rebuild", "CMake")
+        }
     }
 
     override fun actionPerformed(e: AnActionEvent) {

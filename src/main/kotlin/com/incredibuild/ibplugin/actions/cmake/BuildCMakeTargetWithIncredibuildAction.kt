@@ -16,6 +16,7 @@
 package com.incredibuild.ibplugin.actions.cmake
 
 import com.incredibuild.ibplugin.actions.IncredibuildRunner
+import com.incredibuild.ibplugin.actions.disambiguatedLabel
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -33,7 +34,12 @@ class BuildCMakeTargetWithIncredibuildAction : AnAction() {
         // Hidden rather than just disabled: with both this and the Rust plugin's actions
         // potentially registered in the same IDE (see cmake-support.xml/rust-support.xml),
         // only the one matching the open project's actual workspace should ever show.
-        e.presentation.isEnabledAndVisible = e.project?.let(::hasCMakeWorkspace) == true
+        val project = e.project
+        e.presentation.isEnabledAndVisible = project != null && hasCMakeWorkspace(project)
+        // See BuildProjectWithIncredibuildAction.update for why this is unconditional.
+        if (project != null && e.presentation.isEnabledAndVisible) {
+            e.presentation.text = disambiguatedLabel(project, "Build", "CMake")
+        }
     }
 
     override fun actionPerformed(e: AnActionEvent) {

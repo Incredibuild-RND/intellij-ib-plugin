@@ -31,7 +31,15 @@ class BuildProjectWithIncredibuildAction : AnAction() {
         // Hidden rather than just disabled: with both this and the CMake plugin's actions
         // potentially registered in the same IDE (see rust-support.xml/cmake-support.xml),
         // only the one matching the open project's actual workspace should ever show.
-        e.presentation.isEnabledAndVisible = e.project?.let(::hasCargoWorkspace) == true
+        val project = e.project
+        e.presentation.isEnabledAndVisible = project != null && hasCargoWorkspace(project)
+        // A project can have both a Cargo and a CMake workspace at once (see
+        // disambiguatedLabel), in which case this and the CMake Build action are both visible
+        // with otherwise-identical text - so this always sets the text explicitly whenever
+        // shown, rather than only adding the suffix conditionally.
+        if (project != null && e.presentation.isEnabledAndVisible) {
+            e.presentation.text = disambiguatedLabel(project, "Build", "Cargo")
+        }
     }
 
     override fun actionPerformed(e: AnActionEvent) {

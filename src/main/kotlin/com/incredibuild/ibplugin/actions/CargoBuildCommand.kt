@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.actions
 
+import com.incredibuild.ibplugin.actions.cmake.hasCMakeWorkspace
 import com.intellij.execution.ExecutionTargetManager
 import com.intellij.execution.RunManager
 import com.intellij.openapi.application.ReadAction
@@ -177,6 +178,18 @@ internal data class CargoInvocation(val command: String, val workingDirectory: S
  */
 internal fun hasCargoWorkspace(project: Project): Boolean =
     project.cargoProjectsIfCreated?.hasAtLeastOneValidProject == true
+
+/**
+ * [label] as-is, unless [project] has both a Cargo and a CMake workspace loaded at once (e.g.
+ * Rust with a CMake-built C dependency, or CMake + Corrosion) - a case the plain per-workspace
+ * `update()` checks don't disambiguate, since both the Cargo and CMake actions would otherwise
+ * show the identical "Build"/"Rebuild" text side by side in the same Incredibuild menu. Only
+ * reached once a caller's own `update()` has already confirmed its workspace is present, so
+ * this never needs to decide which (if either) action should be hidden - just how to label the
+ * one that is shown.
+ */
+internal fun disambiguatedLabel(project: Project, label: String, suffix: String): String =
+    if (hasCargoWorkspace(project) && hasCMakeWorkspace(project)) "$label ($suffix)" else label
 
 /**
  * The cargo invocation to accelerate, taken from what RustRover's own Build Project would

@@ -110,11 +110,17 @@ private fun resolveCMakeBuild(project: Project, kind: CMakeBuildKind): CMakeBuil
     // line, so running environment.cMake.executablePath directly here would try to run a
     // WSL/container-local path on the Windows host and fail. Decline clearly instead of
     // producing a broken command for a toolchain this integration doesn't support yet.
+    //
+    // CPPToolSet.Kind.isRemoteLike's own body (confirmed by disassembling
+    // intellij.clion.toolchains.jar - it isn't driven by an interface/override per constant)
+    // returns true for exactly Kind.SSH, Kind.WSL and Kind.DOCKER, false for everything else
+    // (MINGW/CYGWIN/MSVC/SYSTEM_UNIX_TOOLSET/SYSTEM_WINDOWS_TOOLSET) - so WSL is covered here
+    // despite running on the same physical machine as the Windows host, not just SSH/Docker.
     val toolSetKind = environment.toolSet.kind
     if (toolSetKind.isRemoteLike) {
         return CMakeBuildResolution.Unsupported(
             "The active CMake profile's toolchain (${toolSetKind.displayName}) runs on a remote host or " +
-                "container, which Incredibuild acceleration doesn't support yet - BuildConsole only runs " +
+                "container, which Incredibuild acceleration doesn't support yet - Incredibuild only runs " +
                 "locally on this machine."
         )
     }

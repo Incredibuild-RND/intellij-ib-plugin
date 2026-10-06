@@ -552,6 +552,10 @@ object IncredibuildRunner {
         }
     }
 
+    /** Whether a build/clean process launched through this object is currently running - used
+     * by [StopBuildAction] to disable itself when there's nothing to stop. */
+    fun isBuildRunning(): Boolean = activeProcessHandler?.isProcessTerminated == false
+
     /**
      * Stops whichever build/clean process is currently running, if any.
      *
@@ -577,10 +581,6 @@ object IncredibuildRunner {
      * shell process rather than staying its parent), so `destroyProcess()`'s SIGTERM reaches
      * ib_console itself directly, which it already handles as a graceful stop request.
      */
-    /** Whether a build/clean process launched through this object is currently running - used
-     * by [StopBuildAction] to disable itself when there's nothing to stop. */
-    fun isBuildRunning(): Boolean = activeProcessHandler?.isProcessTerminated == false
-
     fun stopActiveProcess(project: Project) {
         val handler = activeProcessHandler
         val hadActiveProcess = handler != null && !handler.isProcessTerminated

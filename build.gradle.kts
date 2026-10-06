@@ -2,7 +2,6 @@ import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.bundling.Zip
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
-import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -105,17 +104,17 @@ intellijPlatform {
         // (optional): Unavailable" / "compatibility problems, some of which may be caused
         // by absence of optional dependency"). That's the optional-dependency split from
         // the comment above working as intended - RustRover genuinely can't and shouldn't
-        // resolve CMake-only classes - not a bug. The plugin's own default failureLevel
+        // resolve CMake-only classes - not a bug. Rather than dropping COMPATIBILITY_PROBLEMS
+        // from failureLevel entirely (which would also hide a real, future compatibility
+        // break, e.g. a 2026.x IDE removing an API this plugin uses), those 4 specific,
+        // already-reviewed problems are listed in ignoredProblemsFile instead - everything
+        // else in that category still fails the task. failureLevel is left at its default
         // (COMPATIBILITY_PROBLEMS + INTERNAL_API_USAGES; confirmed by observing which
         // categories actually failed the task even though deprecated/experimental/missing-
-        // optional-dependency problems were also present and reported) would fail this task
-        // on every run purely because of that expected gap, so COMPATIBILITY_PROBLEMS is
-        // dropped here - the report (build/reports/pluginVerifier) still lists these 4, and
-        // would list any newly introduced one too, it just no longer fails the task on its
-        // own. INTERNAL_API_USAGES is left in: it already caught a real, fixable internal-
-        // API usage (PluginManagerCore.getPlugin(), replaced with the public isLoaded()
-        // instead) and should keep gating future ones the same way.
-        failureLevel.set(listOf(VerifyPluginTask.FailureLevel.INTERNAL_API_USAGES))
+        // optional-dependency problems were also present and reported) - it already caught a
+        // real, fixable internal-API usage (PluginManagerCore.getPlugin(), replaced with the
+        // public isLoaded() instead) and should keep gating future ones the same way.
+        ignoredProblemsFile.set(rootProject.layout.projectDirectory.file("gradle/pluginVerifier-ignoredProblems.txt"))
         ides {
             create(IntelliJPlatformType.CLion, "2026.2")
             create(IntelliJPlatformType.RustRover, "2026.2")
