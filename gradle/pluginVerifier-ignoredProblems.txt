@@ -1,0 +1,19 @@
+// Plugin Verifier "ignored problems" file - see pluginVerification.ignoredProblemsFile in
+// build.gradle.kts for how this is wired in, and its comment for why these specific problems
+// are expected rather than bugs.
+//
+// Format (one condition per line, blank lines and "//" comments skipped): either
+// "<plugin id>:<pattern>" or just "<pattern>". No version field, so these keep applying across
+// plugin version bumps. <pattern> is a regex that must match a reported problem's full message
+// text exactly (see IgnoreCondition/IgnoredProblemsFilter in the Plugin Verifier CLI).
+//
+// All 4 lines below are the CMake-only symbols CMakeBuildCommand.kt references
+// (com.jetbrains.cidr.cpp.toolchains.*, com.jetbrains.cidr.cpp.cmake.*) showing up as
+// unresolved when verified against RustRover, which has no CMake plugin - the optional-
+// dependency split (plugin.xml's cmake-support.xml) working as intended, confirmed by the
+// Verifier's own "Missing dependencies: com.intellij.cmake (optional): Unavailable". They can
+// never match when verifying against CLion, which does have com.intellij.cmake.
+com.incredibuild.ibplugin:Package 'com\.jetbrains\.cidr\.cpp\.toolchains' is not found
+com.incredibuild.ibplugin:Package 'com\.jetbrains\.cidr\.cpp\.cmake' is not found
+com.incredibuild.ibplugin:Access to unresolved class com\.jetbrains\.cidr\.cpp\.execution\.CMakeAppRunConfiguration\.BuildAndRunConfigurations
+com.incredibuild.ibplugin:Access to unresolved class com\.jetbrains\.cidr\.cpp\.execution\.CMakeAppRunConfiguration

@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.actions
 
+import com.incredibuild.ibplugin.actions.cmake.hasCMakeWorkspace
 import com.intellij.execution.ExecutionTargetManager
 import com.intellij.execution.RunManager
 import com.intellij.openapi.application.ReadAction
@@ -22,6 +23,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.registry.Registry
 import com.incredibuild.ibplugin.settings.IncredibuildSettings
+import org.rust.cargo.project.model.cargoProjectsIfCreated
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.profiles.CargoBuildProfile
@@ -164,6 +166,30 @@ private fun replacingCargoFlag(
 
 /** A cargo invocation to accelerate: the command to run and the directory to run it in. */
 internal data class CargoInvocation(val command: String, val workingDirectory: String)
+
+/**
+ * Whether [project] has a Cargo workspace at all - used to hide the Cargo-flavoured
+ * Incredibuild actions in a project that doesn't have one (e.g. a plain CMake project open in
+ * an IDE where the Rust plugin also happens to be installed).
+ *
+ * Reads [cargoProjectsIfCreated] rather than the plain (always-creating) `cargoProjects`
+ * extension property, so checking this from every action's `update()` never forces the Rust
+ * plugin's project-model service into existence for a project that never otherwise touches it.
+ */
+internal fun hasCargoWorkspace(project: Project): Boolean =
+    project.cargoProjectsIfCreated?.hasAtLeastOneValidProject == true
+
+/**
+ * [label] as-is, unless [project] has both a Cargo and a CMake workspace loaded at once (e.g.
+ * Rust with a CMake-built C dependency, or CMake + Corrosion) - a case the plain per-workspace
+ * `update()` checks don't disambiguate, since both the Cargo and CMake actions would otherwise
+ * show the identical "Build"/"Rebuild" text side by side in the same Incredibuild menu. Only
+ * reached once a caller's own `update()` has already confirmed its workspace is present, so
+ * this never needs to decide which (if either) action should be hidden - just how to label the
+ * one that is shown.
+ */
+internal fun disambiguatedLabel(project: Project, label: String, suffix: String): String =
+    if (hasCargoWorkspace(project) && hasCMakeWorkspace(project)) "$label ($suffix)" else label
 
 /**
  * The cargo invocation to accelerate, taken from what RustRover's own Build Project would

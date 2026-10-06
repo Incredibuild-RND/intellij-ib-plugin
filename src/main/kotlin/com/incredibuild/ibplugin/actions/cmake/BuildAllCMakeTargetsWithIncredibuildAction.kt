@@ -13,28 +13,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package com.incredibuild.ibplugin.actions
+package com.incredibuild.ibplugin.actions.cmake
 
+import com.incredibuild.ibplugin.actions.IncredibuildRunner
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 
 /**
- * Stops whichever build or clean process (Incredibuild-accelerated or plain)
- * is currently running.
+ * Builds every target in the active CMake profile through Incredibuild - the accelerated
+ * equivalent of CLion's own "Build Project"
+ * ([com.jetbrains.cidr.cpp.execution.build.CLionBuildProjectAction]).
  */
-class StopBuildAction : AnAction() {
+class BuildAllCMakeTargetsWithIncredibuildAction : AnAction() {
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
     override fun update(e: AnActionEvent) {
-        // Always visible (it's shared by both the Cargo and CMake action sets - see
-        // plugin.xml), just disabled when there's nothing to stop.
-        e.presentation.isEnabled = IncredibuildRunner.isBuildRunning()
+        e.presentation.isEnabledAndVisible = e.project?.let(::hasCMakeWorkspace) == true
     }
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        IncredibuildRunner.stopActiveProcess(project)
+        IncredibuildRunner.buildCMakeViaIncredibuild(project, "cmake_build_all", CMakeBuildKind.ALL)
     }
 }

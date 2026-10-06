@@ -4,22 +4,28 @@
     <name>Incredibuild Build Acceleration</name>
     <vendor url="https://www.incredibuild.com" email="support@incredibuild.com">Incredibuild</vendor>
     <description><![CDATA[
-        <p><b>Incredibuild Build Acceleration</b> builds your Rust/Cargo project through Incredibuild directly from RustRover (or IntelliJ IDEA with the Rust plugin).</p>
+        <p><b>Incredibuild Build Acceleration</b> builds your project through Incredibuild directly from the IDE
+        &mdash; a Rust/Cargo project from RustRover (or IntelliJ IDEA with the Rust plugin), or a CMake project from
+        CLion.</p>
         <p>Incredibuild is a build acceleration tool that distributes compilation work across the free cores of multiple machines on your network (or in the cloud), cutting build times without requiring any changes to your code or project structure.</p>
-        <p>A dedicated <b>Incredibuild</b> menu accelerates a build on demand:</p>
+        <p>A dedicated <b>Incredibuild</b> menu accelerates a build on demand. In RustRover:</p>
         <ul>
             <li><b>Build</b> &mdash; builds whatever the IDE's own Build Project would build, through Incredibuild.</li>
             <li><b>Rebuild</b> &mdash; cleans the Cargo workspace first, then builds it.</li>
-            <li><b>Stop Build</b> &mdash; cancels the build in progress.</li>
         </ul>
-        <p>The IDE's own build actions can be accelerated as well. Turn on <b>Accelerate the IDE's own build actions</b> in <i>Settings | Tools | Incredibuild</i>, and two things change: <b>Build Project</b> goes through Incredibuild, and so does the build that runs before <b>Run</b> and <b>Test</b>. The commands and keyboard shortcuts stay exactly where they are &mdash; only what happens underneath changes.</p>
-        <p>The setting is off by default. While it is off &mdash; or if Incredibuild is not installed on the machine &mdash; those actions behave exactly as they do without this plugin. The actions in the <b>Incredibuild</b> menu always use Incredibuild, whichever way the setting is set.</p>
-        <p>Either way the accelerated build runs the same command the IDE itself would have run, so the selected run configuration, build profile and target selection are all respected. The same settings page configures how many parallel jobs (<code>-j</code>) accelerated builds request.</p>
+        <p>In CLion:</p>
+        <ul>
+            <li><b>Build</b> &mdash; builds the target behind the selected run configuration, through Incredibuild.</li>
+            <li><b>Rebuild</b> &mdash; cleans and builds that same target in one accelerated step.</li>
+            <li><b>Build All</b> &mdash; builds every target in the active CMake profile.</li>
+        </ul>
+        <p><b>Stop Build</b> &mdash; cancels the build in progress &mdash; is available either way.</p>
+        <p>In RustRover, the IDE's own build actions can be accelerated as well. Turn on <b>Accelerate the IDE's own build actions</b> in <i>Settings | Tools | Incredibuild</i>, and two things change: <b>Build Project</b> goes through Incredibuild, and so does the build that runs before <b>Run</b> and <b>Test</b>. The commands and keyboard shortcuts stay exactly where they are &mdash; only what happens underneath changes. The setting is off by default. While it is off &mdash; or if Incredibuild is not installed on the machine &mdash; those actions behave exactly as they do without this plugin. The actions in the <b>Incredibuild</b> menu always use Incredibuild, whichever way the setting is set.</p>
+        <p>Either way the accelerated build runs the same command the IDE itself would have run: the selected run configuration, build profile and target selection are respected for Cargo, and in CLion the accelerated build runs cmake's own generator-agnostic <code>cmake --build</code> against whichever build directory, toolchain and compiler the active CMake profile is already configured with, so it works the same way whether that profile uses Ninja, Unix Makefiles or NMake Makefiles. The same settings page configures how many parallel jobs accelerated builds request.</p>
         <p>Works with Incredibuild on both Windows and Linux.</p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.jetbrains.rust</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Incredibuild"
@@ -27,13 +33,6 @@
                     icon="/icons/incredibuild.svg"
                     factoryClass="com.incredibuild.ibplugin.actions.IncredibuildToolWindowFactory"/>
         <postStartupActivity implementation="com.incredibuild.ibplugin.analytics.AnalyticsStartupActivity"/>
-        <!-- order="first" so this is consulted before the Rust plugin's own
-             CargoBuildTaskRunner: ProjectTaskManagerImpl assigns each task to the first
-             runner whose canRun accepts it, and this one only accepts when the user has
-             opted in (Settings > Tools > Incredibuild), declining to the Cargo build
-             otherwise. -->
-        <projectTaskRunner order="first"
-                           implementation="com.incredibuild.ibplugin.actions.IncredibuildProjectTaskRunner"/>
         <applicationConfigurable
                 parentId="tools"
                 instance="com.incredibuild.ibplugin.settings.IncredibuildConfigurable"
@@ -42,37 +41,13 @@
     </extensions>
 
     <actions>
+        <!-- Empty besides Stop Build until an optional dependency below fills it in: the
+             Rust-flavoured Build/Rebuild come from rust-support.xml (only when the Rust plugin
+             is present, e.g. in RustRover), the CMake-flavoured ones from cmake-support.xml
+             (only in CLion). Each inserts itself with anchor="first", ending up above this
+             separator - see the ordering note in those files. -->
         <group id="Incredibuild.Menu" text="Incredibuild" popup="true" icon="/icons/incredibuild.svg">
             <add-to-group group-id="MainMenu" anchor="after" relative-to-action="BuildMenu"/>
-
-            <action id="Incredibuild.BuildProject"
-                    class="com.incredibuild.ibplugin.actions.BuildProjectWithIncredibuildAction"
-                    text="Build"
-                    description="Build the whole Cargo workspace through Incredibuild"
-                    icon="/icons/incredibuild.svg"/>
-
-            <action id="Incredibuild.RebuildProject"
-                    class="com.incredibuild.ibplugin.actions.RebuildProjectWithIncredibuildAction"
-                    text="Rebuild"
-                    description="Clean and rebuild the whole Cargo workspace through Incredibuild"
-                    icon="/icons/incredibuild.svg"/>
-
-            <!-- Hidden for now, pending a decision on whether this action is needed at all.
-                 RunWithIncredibuildAction is intentionally kept in the source tree rather than
-                 deleted, so re-enabling it is just a matter of restoring this registration.
-                 Note before re-enabling: it passes the run configuration's command through
-                 verbatim, so for a "run" configuration it runs the binary and for a test
-                 configuration it runs the tests, rather than only building them. RustRover's
-                 own Build Project rewrites those first (a "run" command becomes "build", and
-                 test/bench commands gain a no-run flag; see
-                 CargoBuildManager.getBuildConfiguration), which this action would need to do
-                 as well to match its "Build ..." label.
-            <action id="Incredibuild.RunWithIncredibuild"
-                    class="com.incredibuild.ibplugin.actions.RunWithIncredibuildAction"
-                    text="Build Selected Run Configuration"
-                    description="Run the currently selected Cargo run configuration through Incredibuild"
-                    icon="/icons/incredibuild.svg"/>
-            -->
 
             <separator/>
 
@@ -83,4 +58,11 @@
                     icon="/icons/incredibuild.svg"/>
         </group>
     </actions>
+
+    <!-- Optional: this plugin loads perfectly well without either of these present (the
+         Incredibuild menu just ends up with only Stop Build in it), so a RustRover-only or
+         CLion-only install of this plugin never fails to load for lack of the other IDE's
+         language plugin. -->
+    <depends optional="true" config-file="rust-support.xml">com.jetbrains.rust</depends>
+    <depends optional="true" config-file="cmake-support.xml">com.intellij.cmake</depends>
 </idea-plugin>

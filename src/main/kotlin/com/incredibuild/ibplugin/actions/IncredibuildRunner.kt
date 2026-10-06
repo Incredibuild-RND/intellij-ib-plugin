@@ -15,6 +15,10 @@
  */
 package com.incredibuild.ibplugin.actions
 
+import com.incredibuild.ibplugin.actions.cmake.CMakeBuildKind
+import com.incredibuild.ibplugin.actions.cmake.CMakeBuildResolution
+import com.incredibuild.ibplugin.actions.cmake.ResolvedCMakeBuild
+import com.incredibuild.ibplugin.actions.cmake.deriveCMakeBuild
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.impl.ConsoleViewImpl
 import com.intellij.execution.process.ColoredProcessHandler
@@ -56,6 +60,9 @@ private const val MINIMUM_RUST_BUILD_VERSION = "10.37.1"
 // "10.37.0.12597" vs "3.18.0").
 private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
 
+/** A POSIX shell variable name - see [IncredibuildRunner]'s CMake Linux environment export. */
+internal val VALID_SHELL_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
+
 /**
  * Shared plumbing for locating Incredibuild, launching BuildConsole (or a plain
  * process, e.g. "cargo clean"), and streaming output into the Incredibuild tool window.
@@ -83,22 +90,7 @@ object IncredibuildRunner {
     internal fun ensureIncredibuildReady(project: Project, actionType: String): File? {
         val installFolder = IncredibuildLocator.findInstallFolder()
         if (installFolder == null) {
-            PostHogClient.capture("incredibuild_not_found", mapOf("action" to actionType))
-            ApplicationManager.getApplication().invokeLater {
-                val result = Messages.showOkCancelDialog(
-                    project,
-                    "Incredibuild is required to accelerate this build, but it wasn't found on this machine.\n\n" +
-                        "You'll be directed to the Incredibuild homepage to download it.",
-                    "Incredibuild Not Found",
-                    "Open Incredibuild.com",
-                    "Cancel",
-                    Messages.getWarningIcon()
-                )
-                if (result == Messages.OK) {
-                    PostHogClient.capture("website_opened")
-                    BrowserUtil.browse("$INCREDIBUILD_WEBSITE?user-id=${PostHogClient.distinctId}")
-                }
-            }
+            showNotFoundDialog(project, actionType)
             return null
         }
 
@@ -130,6 +122,28 @@ object IncredibuildRunner {
         }
 
         return installFolder
+    }
+
+    /** The "Incredibuild wasn't found" dialog, shared by [ensureIncredibuildReady] (Rust) and
+     * [ensureIncredibuildInstalledForCMake] - identical either way, since it's the same
+     * Incredibuild install being looked for regardless of which language triggered the build. */
+    private fun showNotFoundDialog(project: Project, actionType: String) {
+        PostHogClient.capture("incredibuild_not_found", mapOf("action" to actionType))
+        ApplicationManager.getApplication().invokeLater {
+            val result = Messages.showOkCancelDialog(
+                project,
+                "Incredibuild is required to accelerate this build, but it wasn't found on this machine.\n\n" +
+                    "You'll be directed to the Incredibuild homepage to download it.",
+                "Incredibuild Not Found",
+                "Open Incredibuild.com",
+                "Cancel",
+                Messages.getWarningIcon()
+            )
+            if (result == Messages.OK) {
+                PostHogClient.capture("website_opened")
+                BrowserUtil.browse("$INCREDIBUILD_WEBSITE?user-id=${PostHogClient.distinctId}")
+            }
+        }
     }
 
     /**
@@ -538,6 +552,10 @@ object IncredibuildRunner {
         }
     }
 
+    /** Whether a build/clean process launched through this object is currently running - used
+     * by [StopBuildAction] to disable itself when there's nothing to stop. */
+    fun isBuildRunning(): Boolean = activeProcessHandler?.isProcessTerminated == false
+
     /**
      * Stops whichever build/clean process is currently running, if any.
      *
@@ -579,4 +597,204 @@ object IncredibuildRunner {
         // the graceful path shells out to BuildConsole.
         ApplicationManager.getApplication().executeOnPooledThread { handler.destroyProcess() }
     }
+
+    // -----------------------------------------------------------------------------------
+    // CMake (CLion) support - mirrors the Cargo/Rust flow above, but a cmake invocation is
+    // built from a resolved executable + argument list + environment (see
+    // com.incredibuild.ibplugin.actions.cmake.CMakeBuildCommand) rather than a single
+    // command string, and needs no custom Incredibuild profile: unlike Rust/cargo,
+    // Incredibuild's own default profile already covers C/C++ builds.
+    // -----------------------------------------------------------------------------------
+
+    /**
+     * Checks that Incredibuild is installed, showing the "not found" dialog and returning
+     * null if the caller should not proceed. Unlike [ensureIncredibuildReady], this has no
+     * minimum-version gate: there is no known minimum Incredibuild version required for its
+     * native CMake/C++ build support, unlike the specific version bump Rust build support
+     * needed.
+     */
+    internal fun ensureIncredibuildInstalledForCMake(project: Project): File? {
+        val installFolder = IncredibuildLocator.findInstallFolder()
+        if (installFolder == null) {
+            showNotFoundDialog(project, "cmake")
+        }
+        return installFolder
+    }
+
+    /**
+     * Resolves [kind]'s cmake invocation and, if Incredibuild is installed, runs it through
+     * Incredibuild. Everything here - locating Incredibuild, reading the CMake project model -
+     * is blocking work that must not run on the EDT, so the whole thing runs as a background
+     * task; only the dialogs it may show hop back to the EDT.
+     */
+    internal fun buildCMakeViaIncredibuild(project: Project, actionType: String, kind: CMakeBuildKind) {
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Locating Incredibuild") {
+            override fun run(indicator: ProgressIndicator) {
+                val installFolder = ensureIncredibuildInstalledForCMake(project) ?: return
+                val resolution = deriveCMakeBuild(project, kind)
+                val resolved = when (resolution) {
+                    null -> {
+                        showErrorOnEdt(
+                            project,
+                            "Could not determine what to build. Is a CMake project loaded, and a run " +
+                                "configuration selected?"
+                        )
+                        return
+                    }
+                    is CMakeBuildResolution.Unsupported -> {
+                        showErrorOnEdt(project, resolution.reason)
+                        return
+                    }
+                    is CMakeBuildResolution.Ready -> resolution.build
+                }
+                when (val prepared = prepareCMakeBuild(project, installFolder, resolved)) {
+                    is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
+                    is PreparedBuild.Ready -> launchBuild(project, prepared.commandLine, actionType) { _ ->
+                        prepared.cleanUp()
+                    }
+                }
+            }
+        })
+    }
+
+    private fun prepareCMakeBuild(
+        project: Project,
+        installFolder: File,
+        resolved: ResolvedCMakeBuild
+    ): PreparedBuild =
+        if (SystemInfo.isLinux) {
+            prepareCMakeBuildLinux(project, installFolder, resolved)
+        } else {
+            prepareCMakeBuildWindows(project, installFolder, resolved)
+        }
+
+    /**
+     * BuildConsole needs "/command=" with a single quoted value. Rather than hand it the whole
+     * `cmake --build ... --target ...` invocation as one string - which would need its own
+     * space-containing arguments (the build directory, a target name) individually quoted
+     * *inside* that already-quoted value, an ambiguous nested-quoting shape BuildConsole's own
+     * parsing for /command= is not documented to support - this writes a tiny wrapper .cmd that
+     * runs the real invocation with ordinary single-level quoting, and points /command= at just
+     * that script's path (one simple quoted path, the same shape /profile= above already uses
+     * uncontroversially). The toolchain environment (PATH/INCLUDE/LIB for an MSVC profile, ...)
+     * is set inside the same script via `set`, so it doesn't depend on whether BuildConsole
+     * passes its own parent environment through to what it launches.
+     *
+     * No `/profile=`/`/BuildCacheProfile=` here, unlike [prepareBuildWindows]: those point at a
+     * bespoke Incredibuild profile built specifically for Cargo/rustc, which C/C++ needs no
+     * equivalent of - Incredibuild's own default profile already covers cmake/ninja/make/nmake
+     * and the compilers they invoke.
+     */
+    private fun prepareCMakeBuildWindows(
+        project: Project,
+        installFolder: File,
+        resolved: ResolvedCMakeBuild
+    ): PreparedBuild {
+        val buildConsolePath = File(installFolder, "BuildConsole.exe")
+        if (!buildConsolePath.exists()) {
+            return PreparedBuild.Failed(
+                "BuildConsole.exe was not found in the Incredibuild install folder:\n${installFolder.absolutePath}"
+            )
+        }
+
+        val wrapperCmd = File.createTempFile("incredibuild-cmake-", ".cmd")
+        wrapperCmd.deleteOnExit()
+        val cmdLines = StringBuilder("@echo off\r\n")
+        for ((key, value) in resolved.environment) {
+            cmdLines.append("set \"").append(batchEscaped(key)).append('=').append(batchEscaped(value)).append("\"\r\n")
+        }
+        cmdLines.append(cmdQuoted(resolved.executable))
+        for (arg in resolved.arguments) {
+            cmdLines.append(' ').append(cmdQuoted(arg))
+        }
+        cmdLines.append("\r\nexit /b %ERRORLEVEL%\r\n")
+        wrapperCmd.writeText(cmdLines.toString())
+
+        val scriptFile = File.createTempFile("incredibuild-build-", ".ps1")
+        scriptFile.deleteOnExit()
+        scriptFile.writeText(
+            "& \"${buildConsolePath.absolutePath}\" " +
+                "${powerShellSingleQuoted("/command=\"${wrapperCmd.absolutePath}\"")} " +
+                "${powerShellSingleQuoted("/title=\"${project.name}\"")} " +
+                // Explicitly opts this session into Build Cache, the same way the Linux
+                // ib_console invocation below already does via --build-cache-local-shared - no
+                // /BuildCacheProfile= is passed alongside it because cl.exe/clang/gcc are
+                // already covered by BuildConsole's own built-in default profile (the bespoke
+                // *.xml sample profiles in the Incredibuild install's "BuildCache Profiles"
+                // folder are only for tools that default profile doesn't already know, e.g.
+                // rustc/lib for the Cargo build above, or nvcc/perl).
+                "/BUILDCACHELOCAL=ON\n" +
+                "exit \$LASTEXITCODE\n"
+        )
+
+        val commandLine = GeneralCommandLine("powershell")
+            .withParameters("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.absolutePath)
+            .withWorkDirectory(resolved.workingDirectory)
+
+        return PreparedBuild.Ready(commandLine) {
+            scriptFile.delete()
+            wrapperCmd.delete()
+        }
+    }
+
+    /**
+     * ib_console has no `/command=`-style text field - the build command is trailing argv
+     * after its own recognized options - so, unlike Windows, there's no nested-quoting
+     * concern to work around here: the whole invocation (environment exports, then the cmake
+     * command) is written into one script, each token quoted individually and safely via
+     * [shellSingleQuoted].
+     *
+     * No custom `--profile` here, unlike [prepareBuildLinux]'s RustRover-specific one: C/C++
+     * needs no equivalent, ib_console's own shipped default profile already covers it.
+     */
+    private fun prepareCMakeBuildLinux(project: Project, installFolder: File, resolved: ResolvedCMakeBuild): PreparedBuild {
+        val consolePath = File(installFolder, "bin/ib_console")
+        if (!consolePath.exists()) {
+            return PreparedBuild.Failed(
+                "ib_console was not found in the Incredibuild install folder:\n${installFolder.absolutePath}"
+            )
+        }
+
+        val scriptFile = File.createTempFile("incredibuild-build-", ".sh")
+        scriptFile.deleteOnExit()
+        val script = StringBuilder("#!/bin/sh\n")
+        for ((key, value) in resolved.environment) {
+            // Not every entry CPPBuildUtil.buildCommandLine hands back is necessarily a valid
+            // shell identifier (e.g. an inherited "BASH_FUNC_foo%%" from an exported bash
+            // function) - "export" on such a name fails and takes the whole script down with
+            // it, so anything that doesn't look like NAME=VALUE syntax expects is dropped
+            // instead of exported.
+            if (!VALID_SHELL_IDENTIFIER.matches(key)) continue
+            script.append("export ").append(key).append('=').append(shellSingleQuoted(value)).append('\n')
+        }
+        script.append("exec ").append(shellSingleQuoted(consolePath.absolutePath))
+            .append(" --caption ").append(shellSingleQuoted(project.name))
+            .append(" --ib-quiet --build-cache-local-shared --build-cache-basedir=\"\$PWD\" -- ")
+            .append(shellSingleQuoted(resolved.executable))
+        for (arg in resolved.arguments) {
+            script.append(' ').append(shellSingleQuoted(arg))
+        }
+        // Merges stderr into stdout, for the same reason prepareBuildLinux's Cargo build does.
+        script.append(" 2>&1\n")
+        scriptFile.writeText(script.toString())
+
+        val commandLine = GeneralCommandLine("/bin/sh", scriptFile.absolutePath)
+            .withWorkDirectory(resolved.workingDirectory)
+
+        return PreparedBuild.Ready(commandLine) { scriptFile.delete() }
+    }
+
+    /** Wraps [value] as a cmd.exe double-quoted token (after [batchEscaped]), needed only when
+     * it contains whitespace. */
+    internal fun cmdQuoted(value: String): String {
+        val escaped = batchEscaped(value)
+        return if (escaped.any { it.isWhitespace() }) "\"$escaped\"" else escaped
+    }
+
+    /** Escapes [value] for literal use in a .cmd file: cmd.exe expands `%...%` variable
+     * references anywhere on a line it parses - including inside a `set "KEY=VALUE"` value and
+     * inside an already-quoted argument - so a stray `%` in a path or environment value (e.g.
+     * `%TEMP%` inside a directory name) would otherwise get silently substituted rather than
+     * passed through literally. Doubling it is cmd.exe's own escape for a literal `%`. */
+    internal fun batchEscaped(value: String): String = value.replace("%", "%%")
 }

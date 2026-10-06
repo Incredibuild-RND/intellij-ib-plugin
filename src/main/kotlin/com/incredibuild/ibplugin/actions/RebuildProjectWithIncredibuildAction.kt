@@ -40,6 +40,15 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
 
     override fun getActionUpdateThread() = ActionUpdateThread.BGT
 
+    override fun update(e: AnActionEvent) {
+        val project = e.project
+        e.presentation.isEnabledAndVisible = project != null && hasCargoWorkspace(project)
+        // See BuildProjectWithIncredibuildAction.update for why this is unconditional.
+        if (project != null && e.presentation.isEnabledAndVisible) {
+            e.presentation.text = disambiguatedLabel(project, "Rebuild", "Cargo")
+        }
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val workingDirectory = project.basePath ?: return

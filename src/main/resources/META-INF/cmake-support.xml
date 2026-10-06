@@ -1,0 +1,48 @@
+<!-- Loaded only when com.intellij.cmake is present (see plugin.xml's optional <depends>) -
+     the CMake/CLion-flavoured half of this plugin's Incredibuild integration. Also compiled
+     against com.intellij.clion ("Native Build Tools"), which com.intellij.cmake itself always
+     brings along, for the CidrBuildTargetAction/CPPToolchains/CPPEnvironment/CPPBuildUtil family
+     these actions are built on - see actions/cmake/CMakeBuildCommand.kt. -->
+<idea-plugin>
+    <actions>
+        <!-- anchor="first" against the (so far only-a-separator) Incredibuild.Menu group
+             declared in plugin.xml inserts this above that separator - Build ends up first,
+             pushing anything already there down.
+
+             Plain "Build"/"Rebuild"/"Build All" rather than "... CMake Target(s)": these and
+             the Rust optional dependency's actions above could in principle both be registered
+             in the same IDE, but each now hides itself via update() (see
+             BuildCMakeTargetWithIncredibuildAction/BuildProjectWithIncredibuildAction) unless
+             the open project actually has that kind of workspace, so in practice only one set
+             is ever visible for a given project at a time.
+
+             Not added to ProjectViewPopupMenu: these three always act on the selected run
+             configuration's target (or, for Build All, the whole active profile), never on
+             whatever happens to be right-clicked in the Project view - a "Build CMake Target"
+             entry on an arbitrary file or folder there would be misleading, since it wouldn't
+             build *that* file/folder's target. -->
+        <action id="Incredibuild.CMake.Build"
+                class="com.incredibuild.ibplugin.actions.cmake.BuildCMakeTargetWithIncredibuildAction"
+                text="Build"
+                description="Build the selected run configuration's target through Incredibuild"
+                icon="/icons/incredibuild.svg">
+            <add-to-group group-id="Incredibuild.Menu" anchor="first"/>
+        </action>
+
+        <action id="Incredibuild.CMake.Rebuild"
+                class="com.incredibuild.ibplugin.actions.cmake.RebuildCMakeTargetWithIncredibuildAction"
+                text="Rebuild"
+                description="Clean and rebuild the selected run configuration's target through Incredibuild"
+                icon="/icons/incredibuild.svg">
+            <add-to-group group-id="Incredibuild.Menu" anchor="after" relative-to-action="Incredibuild.CMake.Build"/>
+        </action>
+
+        <action id="Incredibuild.CMake.BuildAll"
+                class="com.incredibuild.ibplugin.actions.cmake.BuildAllCMakeTargetsWithIncredibuildAction"
+                text="Build All"
+                description="Build every target in the active CMake profile through Incredibuild"
+                icon="/icons/incredibuild.svg">
+            <add-to-group group-id="Incredibuild.Menu" anchor="after" relative-to-action="Incredibuild.CMake.Rebuild"/>
+        </action>
+    </actions>
+</idea-plugin>
