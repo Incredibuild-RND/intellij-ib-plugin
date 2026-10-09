@@ -16,16 +16,25 @@
 package com.incredibuild.ibplugin.settings
 
 import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.extensions.PluginId
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.BoundConfigurable
+import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.bindIntText
 import com.intellij.ui.dsl.builder.bindSelected
+import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
 
 private val RUST_PLUGIN_ID = PluginId.getId("com.jetbrains.rust")
 
-/** Settings > Tools > Incredibuild - the "-j"/"--parallel" job count and (RustRover only)
- * IDE build acceleration. */
+// Registered by rider-support.xml, so present exactly when the .NET half is loaded. Checked instead
+// of the com.intellij.modules.rider alias it's gated on: PluginManagerCore.isLoaded() only matches
+// real plugin ids, not module aliases, and PlatformUtils.isRider() is internal API.
+private const val RIDER_ACTION_ID = "Incredibuild.DotNet.BuildSolution"
+
+/** Settings > Tools > Incredibuild - the "-j"/"--parallel" job count, (RustRover only) IDE build
+ * acceleration, and (Rider only) the MSBuild to use. */
 class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
 
     override fun createPanel() = panel {
@@ -46,5 +55,18 @@ class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
                         "The actions in the <b>Incredibuild</b> menu always use Incredibuild, either way."
                 )
         }.visible(PluginManagerCore.isLoaded(RUST_PLUGIN_ID))
+        // Only meaningful for the .NET actions (see rider-support.xml), so only shown in Rider.
+        row("MSBuild executable:") {
+            textFieldWithBrowseButton(
+                FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().withTitle("Select MSBuild or dotnet")
+            )
+                .align(AlignX.FILL)
+                .bindText(IncredibuildSettings.getInstance()::msBuildPath)
+                .comment(
+                    "Used by the <b>... with Incredibuild</b> .NET build actions. Leave empty to detect it " +
+                        "automatically: Visual Studio's MSBuild.exe on Windows if it has the .NET SDK component, otherwise " +
+                        "<code>dotnet msbuild</code>. Either MSBuild.exe or the dotnet executable can be given."
+                )
+        }.visible(ActionManager.getInstance().getAction(RIDER_ACTION_ID) != null)
     }
 }

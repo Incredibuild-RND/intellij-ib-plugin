@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- Rider support for .NET solutions: **Build Solution with Incredibuild**, **Rebuild Solution with Incredibuild** and
+  **Build Selected Projects with Incredibuild** in the **Build** menu, the Solution Explorer context menu and the
+  **Incredibuild** menu, bindable to shortcuts in **Settings/Preferences > Keymap**. They build the solution as it is
+  configured, in its active configuration and platform, through MSBuild accelerated by Incredibuild. While one runs,
+  the status bar shows the accelerated build in progress, and a notification reports the result.
+- **Settings/Preferences > Tools > Incredibuild** can set the MSBuild that Rider builds use, when the automatically
+  detected one isn't the right one.
+- The installers now also install the plugin into Rider.
+
 ## [1.0.3]
 
 ### Added

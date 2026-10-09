@@ -17,3 +17,11 @@ com.incredibuild.ibplugin:Package 'com\.jetbrains\.cidr\.cpp\.toolchains' is not
 com.incredibuild.ibplugin:Package 'com\.jetbrains\.cidr\.cpp\.cmake' is not found
 com.incredibuild.ibplugin:Access to unresolved class com\.jetbrains\.cidr\.cpp\.execution\.CMakeAppRunConfiguration\.BuildAndRunConfigurations
 com.incredibuild.ibplugin:Access to unresolved class com\.jetbrains\.cidr\.cpp\.execution\.CMakeAppRunConfiguration
+//
+// The line below is the same optional-dependency split seen from Rider, which has no Rust plugin:
+// RunWithIncredibuildAction is kept in the source tree but not registered anywhere (see the
+// commented-out registration in rust-support.xml), and everything that IS registered against
+// org.rust only loads through rust-support.xml. Confirmed by the Verifier's own "Missing
+// dependencies: com.jetbrains.rust (optional): Unavailable" against Rider. (The CMake lines above
+// don't apply to Rider: it bundles com.intellij.cmake itself.)
+com.incredibuild.ibplugin:Package 'org\.rust' is not found
