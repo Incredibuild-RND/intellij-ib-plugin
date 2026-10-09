@@ -62,8 +62,14 @@ internal object DotNetBuildRunner {
                 }
 
                 val build = when (request.kind) {
-                    DotNetBuildKind.BUILD_SOLUTION, DotNetBuildKind.REBUILD_SOLUTION ->
-                        solutionBuild(tool, request.entryPoint, request.kind, request.configuration, request.platform)
+                    DotNetBuildKind.BUILD_SOLUTION, DotNetBuildKind.REBUILD_SOLUTION -> solutionBuild(
+                        tool,
+                        request.entryPoint,
+                        request.kind,
+                        request.configuration,
+                        request.platform,
+                        restore = needsRestore(readSolutionProjectFiles(request.solutionFile))
+                    )
 
                     DotNetBuildKind.BUILD_PROJECTS -> projectsBuild(
                         tool,
@@ -71,7 +77,8 @@ internal object DotNetBuildRunner {
                         request.projectFiles,
                         request.configuration,
                         request.platform,
-                        readProjectConfigurations(request.solutionFile)
+                        readProjectConfigurations(request.solutionFile),
+                        restore = needsRestore(request.projectFiles)
                     )
                 }
 
@@ -94,6 +101,18 @@ internal object DotNetBuildRunner {
         } catch (e: Exception) {
             LOG.warn("Could not read project configuration mappings from $solutionFile", e)
             emptyMap()
+        }
+    }
+
+    /** The solution's project files, for [needsRestore] - empty if they can't be read, which then
+     * leaves restore to Rider, as it is for every already-restored solution. */
+    private fun readSolutionProjectFiles(solutionFile: String): List<String> {
+        val file = File(solutionFile)
+        return try {
+            solutionProjectFiles(file.readText(), file.absoluteFile.parentFile)
+        } catch (e: Exception) {
+            LOG.warn("Could not read the project list from $solutionFile", e)
+            emptyList()
         }
     }
 

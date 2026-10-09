@@ -52,7 +52,14 @@ internal class MsBuildTool(val executable: String, val leadingArguments: List<St
 /**
  * Arguments shared by every accelerated MSBuild invocation, on top of the target and the active
  * configuration:
- *  - `-restore`: Rider's own build restores NuGet packages first too.
+ *  - No `-restore` (see [RESTORE_ARGUMENT] for when it is added): Rider restores NuGet packages
+ *    itself - on solution load, on project changes and before its own builds - and watches each
+ *    project's restore outputs (obj\*.nuget.dgspec.json, *.nuget.g.props, project.assets.json).
+ *    Any restore by another process rewrites those files, which Rider treats as "restore inputs
+ *    changed": it re-restores every project on its next build, regenerating *.nuget.g.props - an
+ *    import of every project, so an input of every compile - and recompiles the whole solution
+ *    even though this build just did. Leaving restore to Rider keeps the accelerated build and
+ *    Rider's own builds incremental with each other.
  *  - `-graph`: MSBuild's static graph mode - evaluate the whole project graph up front, then
  *    build it bottom-up, every project only once its references are done. Without it, a project
  *    that references many others (an app referencing all of a solution's libraries) builds those
@@ -79,7 +86,6 @@ internal class MsBuildTool(val executable: String, val leadingArguments: List<St
  * only affect this one command-line invocation.
  */
 internal val COMMON_MSBUILD_ARGUMENTS = listOf(
-    "-restore",
     "-graph",
     "-m",
     "-nodeReuse:false",
@@ -87,6 +93,37 @@ internal val COMMON_MSBUILD_ARGUMENTS = listOf(
     "-nologo",
     "-v:minimal",
 )
+
+/**
+ * Added only when some project being built has never been restored (see [needsRestore]) - then
+ * the build can't succeed without it, and there's no restore state of Rider's to disturb yet.
+ */
+internal const val RESTORE_ARGUMENT = "-restore"
+
+/**
+ * Whether any of [projectFiles] has no NuGet assets file yet (obj\project.assets.json, where the
+ * .NET SDK puts it by default) - i.e. was never restored, so building it would fail with NETSDK1004.
+ * A project that moves its intermediate folder elsewhere shows up here as unrestored, which only
+ * costs it the restore it would have had anyway before this check existed.
+ */
+internal fun needsRestore(projectFiles: List<String>): Boolean =
+    projectFiles.any { !File(File(it).absoluteFile.parentFile, "obj${File.separator}project.assets.json").isFile }
+
+private val SLNX_PROJECT_PATH = Regex("""<Project\s[^>]*Path="([^"]+)"""")
+
+/**
+ * The project files a .sln or .slnx lists, resolved against its directory - for [needsRestore].
+ * Solution folders and non-project entries (anything not ending in "proj") are skipped.
+ */
+internal fun solutionProjectFiles(solutionText: String, solutionDir: File): List<String> {
+    val relativePaths = SLN_PROJECT_LINE.findAll(solutionText).map { it.groupValues[1] } +
+        SLNX_PROJECT_PATH.findAll(solutionText).map { it.groupValues[1] }
+    return relativePaths
+        .filter { it.endsWith("proj", ignoreCase = true) }
+        .map { File(solutionDir, it.replace('\\', File.separatorChar).replace('/', File.separatorChar)).path }
+        .distinct()
+        .toList()
+}
 
 /**
  * The accelerated build for a whole solution - the equivalent of Rider's own Build/Rebuild
@@ -98,14 +135,15 @@ internal fun solutionBuild(
     entryPoint: String,
     kind: DotNetBuildKind,
     configuration: String,
-    platform: String
+    platform: String,
+    restore: Boolean = false
 ): NativeBuild {
     val arguments = tool.leadingArguments + listOf(
         entryPoint,
         "-t:${kind.msBuildTarget}",
         "-p:Configuration=$configuration",
         "-p:Platform=$platform",
-    ) + COMMON_MSBUILD_ARGUMENTS
+    ) + restoreArguments(restore) + COMMON_MSBUILD_ARGUMENTS
     return NativeBuild(listOf(NativeCommand(tool.executable, arguments)), File(entryPoint).absoluteFile.parent)
 }
 
@@ -132,7 +170,8 @@ internal fun projectsBuild(
     projectFiles: List<String>,
     configuration: String,
     platform: String,
-    mappings: Map<String, Map<String, String>>
+    mappings: Map<String, Map<String, String>>,
+    restore: Boolean = false
 ): NativeBuild {
     val solution = File(solutionFile).absoluteFile
     val solutionDir = solution.parent.trimEnd(File.separatorChar) + File.separator
@@ -153,11 +192,13 @@ internal fun projectsBuild(
             "-t:${DotNetBuildKind.BUILD_PROJECTS.msBuildTarget}",
             "-p:Configuration=$projectConfiguration",
             "-p:Platform=${projectPlatformName(projectPlatform)}",
-        ) + solutionProperties + COMMON_MSBUILD_ARGUMENTS
+        ) + solutionProperties + restoreArguments(restore) + COMMON_MSBUILD_ARGUMENTS
         NativeCommand(tool.executable, arguments)
     }
     return NativeBuild(commands, solution.parent)
 }
+
+private fun restoreArguments(restore: Boolean): List<String> = if (restore) listOf(RESTORE_ARGUMENT) else emptyList()
 
 /**
  * Solutions spell the .NET "any CPU" platform with a space ("Any CPU"), project files without

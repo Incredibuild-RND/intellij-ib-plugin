@@ -19,9 +19,11 @@ import com.incredibuild.ibplugin.actions.IncredibuildRunner
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeBuild
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeCommand
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.nio.file.Files
 
 /** Covers how the .NET actions turn Rider's state into MSBuild invocations, and the wrapper
  * scripts those invocations are run through. */
@@ -109,6 +111,61 @@ class MsBuildCommandTest {
             listOf(appProject, "-t:Build", "-p:Configuration=Release", "-p:Platform=AnyCPU"),
             build.commands.single().arguments.take(4)
         )
+    }
+
+    @Test
+    fun `builds leave restore to Rider by default`() {
+        val solution = solutionBuild(msBuild, solutionFile, DotNetBuildKind.BUILD_SOLUTION, "Debug", "Any CPU")
+        val projects = projectsBuild(msBuild, solutionFile, listOf(appProject), "Debug", "Any CPU", emptyMap())
+        assertFalse(solution.commands.single().arguments.contains(RESTORE_ARGUMENT))
+        assertFalse(projects.commands.single().arguments.contains(RESTORE_ARGUMENT))
+    }
+
+    @Test
+    fun `builds restore when asked to`() {
+        val solution = solutionBuild(msBuild, solutionFile, DotNetBuildKind.BUILD_SOLUTION, "Debug", "Any CPU", restore = true)
+        val projects =
+            projectsBuild(msBuild, solutionFile, listOf(appProject), "Debug", "Any CPU", emptyMap(), restore = true)
+        assertTrue(solution.commands.single().arguments.contains(RESTORE_ARGUMENT))
+        assertTrue(projects.commands.single().arguments.contains(RESTORE_ARGUMENT))
+    }
+
+    @Test
+    fun `needsRestore is true only when a project has no assets file`() {
+        val root = Files.createTempDirectory("msbuild-restore-test").toFile()
+        try {
+            val restored = File(root, "Restored/Restored.csproj").apply { parentFile.mkdirs(); writeText("<Project/>") }
+            File(restored.parentFile, "obj/project.assets.json").apply { parentFile.mkdirs(); writeText("{}") }
+            val fresh = File(root, "Fresh/Fresh.csproj").apply { parentFile.mkdirs(); writeText("<Project/>") }
+
+            assertFalse(needsRestore(listOf(restored.path)))
+            assertTrue(needsRestore(listOf(restored.path, fresh.path)))
+            assertFalse(needsRestore(emptyList()))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `solutionProjectFiles lists the projects of an sln`() {
+        assertEquals(
+            listOf(appProject, libProject),
+            solutionProjectFiles(sln, solutionDir)
+        )
+    }
+
+    @Test
+    fun `solutionProjectFiles lists the projects of an slnx and skips non-project entries`() {
+        val slnx = """
+            <Solution>
+              <Folder Name="/src/">
+                <Project Path="src/App/App.csproj" />
+              </Folder>
+              <Project Path="Lib\Lib.csproj" Type="Classic C#" />
+              <File Path="README.md" />
+            </Solution>
+        """.trimIndent()
+        assertEquals(listOf(appProject, libProject), solutionProjectFiles(slnx, solutionDir))
     }
 
     @Test
