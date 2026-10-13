@@ -45,7 +45,9 @@ internal class MsBuildTool(val executable: String, val leadingArguments: List<St
     companion object {
         /** MSBuild.exe itself, or the dotnet host - which needs its `msbuild` verb first. */
         fun fromPath(path: String): MsBuildTool {
-            val name = File(path).nameWithoutExtension
+            // Split on either separator rather than through File, whose notion of one depends on
+            // the OS this runs on - so a Windows path reads the same everywhere (e.g. in tests).
+            val name = path.substringAfterLast('/').substringAfterLast('\\').substringBeforeLast('.')
             return if (name.equals("dotnet", ignoreCase = true)) {
                 MsBuildTool(path, listOf("msbuild"), "dotnet msbuild ($path)")
             } else {
