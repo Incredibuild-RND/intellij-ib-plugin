@@ -95,9 +95,12 @@ internal object DotNetBuildRunner {
 
     private fun readProjectConfigurations(solutionFile: String): Map<String, Map<String, String>> {
         val file = File(solutionFile)
-        if (!file.extension.equals("sln", ignoreCase = true)) return emptyMap()
         return try {
-            parseSolutionProjectConfigurations(file.readText(), file.absoluteFile.parentFile)
+            when (file.extension.lowercase()) {
+                "sln" -> parseSolutionProjectConfigurations(file.readText(), file.absoluteFile.parentFile)
+                "slnx" -> parseSlnxProjectConfigurations(file.readText(), file.absoluteFile.parentFile)
+                else -> emptyMap()
+            }
         } catch (e: Exception) {
             LOG.warn("Could not read project configuration mappings from $solutionFile", e)
             emptyMap()

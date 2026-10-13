@@ -17,7 +17,13 @@ package com.incredibuild.ibplugin.actions.dotnet
 
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeBuild
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeCommand
+import org.w3c.dom.Document
+import org.w3c.dom.Element
+import org.xml.sax.InputSource
 import java.io.File
+import java.io.IOException
+import java.io.StringReader
+import javax.xml.parsers.DocumentBuilderFactory
 
 /** Which of the three .NET "... with Incredibuild" actions is asking for a command. */
 internal enum class DotNetBuildKind(val msBuildTarget: String) {
@@ -101,13 +107,52 @@ internal val COMMON_MSBUILD_ARGUMENTS = listOf(
 internal const val RESTORE_ARGUMENT = "-restore"
 
 /**
- * Whether any of [projectFiles] has no NuGet assets file yet (obj\project.assets.json, where the
- * .NET SDK puts it by default) - i.e. was never restored, so building it would fail with NETSDK1004.
- * A project that moves its intermediate folder elsewhere shows up here as unrestored, which only
- * costs it the restore it would have had anyway before this check existed.
+ * Whether any of [projectFiles] is a PackageReference-restored project with no NuGet assets file
+ * yet - i.e. was never restored, so building it would fail with NETSDK1004.
+ *
+ * Only such projects ever get a project.assets.json, so everything else is skipped rather than
+ * counted as unrestored: shared projects (.shproj), C++ projects (.vcxproj), classic projects
+ * using packages.config, ... Counting those would add `-restore` to every build of a solution
+ * that contains one - exactly the restore-state churn [COMMON_MSBUILD_ARGUMENTS] explains this
+ * is meant to avoid. A project file that can't be read is skipped too, leaving restore to Rider.
  */
 internal fun needsRestore(projectFiles: List<String>): Boolean =
-    projectFiles.any { !File(File(it).absoluteFile.parentFile, "obj${File.separator}project.assets.json").isFile }
+    projectFiles.any { isUnrestoredPackageReferenceProject(File(it).absoluteFile) }
+
+/** Every SDK-style project restores through PackageReference implicitly, as does a classic one
+ * that lists a PackageReference or opts in with RestoreProjectStyle. */
+private val PACKAGE_REFERENCE_PROJECT_MARKERS = listOf(
+    Regex("""\bSdk\s*=\s*""""),          // <Project Sdk="..."> or <Import Project="Sdk.props" Sdk="...">
+    Regex("""<Sdk\s"""),                 // <Sdk Name="..." />
+    Regex("""<PackageReference\b"""),
+    Regex("""<RestoreProjectStyle\b"""),
+)
+
+private fun isUnrestoredPackageReferenceProject(projectFile: File): Boolean {
+    val text = try {
+        projectFile.readText()
+    } catch (e: IOException) {
+        return false
+    }
+    if (PACKAGE_REFERENCE_PROJECT_MARKERS.none { it.containsMatchIn(text) }) return false
+    return assetsFileCandidates(projectFile).none { it.isFile }
+}
+
+/**
+ * Where the .NET SDK may have put [projectFile]'s project.assets.json:
+ *  - obj\ next to the project, the default;
+ *  - artifacts\obj\<project name>\ in the project's folder or any folder above it, with the
+ *    artifacts output layout (UseArtifactsOutput) - whose root defaults to the folder holding
+ *    Directory.Build.props, which can be anywhere above the project.
+ * A project that moves its intermediate folder anywhere else (a custom BaseIntermediateOutputPath)
+ * shows up as unrestored, which only costs it a restore.
+ */
+private fun assetsFileCandidates(projectFile: File): Sequence<File> {
+    val projectDir = projectFile.parentFile
+    val artifactsLayout = generateSequence(projectDir) { it.parentFile }
+        .map { File(it, "artifacts${File.separator}obj${File.separator}${projectFile.nameWithoutExtension}") }
+    return (sequenceOf(File(projectDir, "obj")) + artifactsLayout).map { File(it, "project.assets.json") }
+}
 
 private val SLNX_PROJECT_PATH = Regex("""<Project\s[^>]*Path="([^"]+)"""")
 
@@ -156,7 +201,8 @@ internal fun solutionBuild(
  * asked to build a specific project by a target name derived from its solution-folder path - so
  * the context the solution would otherwise have provided is passed explicitly instead:
  *  - the project's own configuration|platform that the solution's active configuration maps it
- *    to ([mappings], from [parseSolutionProjectConfigurations]) - falling back to the solution
+ *    to ([mappings], from [parseSolutionProjectConfigurations] or
+ *    [parseSlnxProjectConfigurations]) - falling back to the solution
  *    configuration's own names, as Visual Studio does for a project with no mapping of its own;
  *  - the `SolutionDir`/`SolutionPath`/... properties MSBuild would have set had it come in
  *    through the solution, which build logic commonly relies on (e.g. a shared output folder).
@@ -224,9 +270,8 @@ private val SLN_ACTIVE_CFG_LINE = Regex(
  * solution configuration|platform builds (its `ProjectConfigurationPlatforms` section), keyed by
  * [normalizedPath] of each project file and then by solution "Configuration|Platform".
  *
- * Returns an empty map for anything else (e.g. an XML .slnx, which only lists the exceptions to
- * the same-names default, or a .sln this can't parse) - [projectsBuild] then falls back to the
- * solution configuration's own names, which is what such solutions mean by default anyway.
+ * Returns an empty map for a .sln this can't parse - [projectsBuild] then falls back to the
+ * solution configuration's own names. An XML .slnx is read by [parseSlnxProjectConfigurations].
  */
 internal fun parseSolutionProjectConfigurations(solutionText: String, solutionDir: File): Map<String, Map<String, String>> {
     val projectPathByGuid = HashMap<String, String>()
@@ -243,6 +288,90 @@ internal fun parseSolutionProjectConfigurations(solutionText: String, solutionDi
     }
     return result
 }
+
+/** .NET project types whose platform a .slnx maps to "Any CPU" unless told otherwise. */
+private val MANAGED_PROJECT_EXTENSIONS = setOf("csproj", "vbproj", "fsproj")
+
+/**
+ * The same mapping as [parseSolutionProjectConfigurations], for an XML (.slnx) solution.
+ *
+ * Unlike a .sln, a .slnx doesn't spell out every project's configuration|platform for every
+ * solution one - only the exceptions to its project type's defaults, as `<BuildType>`/`<Platform>`
+ * rules inside each `<Project>`. The defaults are what makes a plain fallback to the solution's
+ * own names wrong: a .NET project builds as "Any CPU" for every solution platform (a solution's
+ * "x64" doesn't make a C# library x64 - it would put its output in bin\x64\ instead of the bin\
+ * Rider's own build uses), and a C++ project builds the solution's "x86" as "Win32". So each
+ * project starts from its type's default and its own rules are applied on top, in order, the
+ * last matching one winning.
+ *
+ * Solution configurations are the `<Configurations>` section's build types × platforms, each
+ * defaulting as Visual Studio's does when not declared (Debug and Release; Any CPU).
+ */
+internal fun parseSlnxProjectConfigurations(solutionText: String, solutionDir: File): Map<String, Map<String, String>> {
+    val root = parseXml(solutionText).documentElement
+    val declarations = root.childElements("Configurations").firstOrNull()
+    val buildTypes = declarations?.childElements("BuildType")?.mapNotNull { it.attributeOrNull("Name") }?.toList()
+        .orEmpty().ifEmpty { listOf("Debug", "Release") }
+    val platforms = declarations?.childElements("Platform")?.mapNotNull { it.attributeOrNull("Name") }?.toList()
+        .orEmpty().ifEmpty { listOf("Any CPU") }
+
+    val result = HashMap<String, Map<String, String>>()
+    val projects = root.getElementsByTagName("Project")
+    for (i in 0 until projects.length) {
+        val project = projects.item(i) as Element
+        val path = project.attributeOrNull("Path") ?: continue
+        val projectFile = File(solutionDir, path.replace('\\', File.separatorChar).replace('/', File.separatorChar))
+        val rules = project.childElements().filter { it.tagName == "BuildType" || it.tagName == "Platform" }.toList()
+
+        val mapping = HashMap<String, String>()
+        for (buildType in buildTypes) {
+            for (platform in platforms) {
+                var projectBuildType = buildType
+                var projectPlatform = defaultSlnxProjectPlatform(projectFile.extension.lowercase(), platform)
+                for (rule in rules) {
+                    val target = rule.attributeOrNull("Project") ?: continue
+                    if (!slnxRuleMatches(rule.attributeOrNull("Solution"), buildType, platform)) continue
+                    if (rule.tagName == "BuildType") projectBuildType = target else projectPlatform = target
+                }
+                mapping["$buildType|$platform"] = "$projectBuildType|$projectPlatform"
+            }
+        }
+        result[normalizedPath(projectFile.path)] = mapping
+    }
+    return result
+}
+
+private fun defaultSlnxProjectPlatform(extension: String, solutionPlatform: String): String = when {
+    extension in MANAGED_PROJECT_EXTENSIONS -> "Any CPU"
+    extension == "vcxproj" && solutionPlatform.equals("x86", ignoreCase = true) -> "Win32"
+    else -> solutionPlatform
+}
+
+/** A rule's `Solution="BuildType|Platform"` pattern - either half may be `*` or left out, and a
+ * rule without one applies to every solution configuration. */
+private fun slnxRuleMatches(pattern: String?, buildType: String, platform: String): Boolean {
+    if (pattern.isNullOrBlank()) return true
+    val parts = pattern.split('|', limit = 2).map { it.trim() }
+    fun matches(part: String?, value: String) = part.isNullOrEmpty() || part == "*" || part.equals(value, ignoreCase = true)
+    return matches(parts[0], buildType) && matches(parts.getOrNull(1), platform)
+}
+
+private fun parseXml(text: String): Document {
+    val factory = DocumentBuilderFactory.newInstance().apply {
+        // A solution file never needs a DTD - refusing one rules out entity-expansion tricks.
+        setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+        isExpandEntityReferences = false
+    }
+    return factory.newDocumentBuilder().parse(InputSource(StringReader(text)))
+}
+
+private fun Element.childElements(tagName: String? = null): Sequence<Element> =
+    (0 until childNodes.length).asSequence()
+        .map { childNodes.item(it) }
+        .filterIsInstance<Element>()
+        .filter { tagName == null || it.tagName == tagName }
+
+private fun Element.attributeOrNull(name: String): String? = getAttribute(name).takeIf { it.isNotEmpty() }
 
 /** Canonical, case-insensitive form of a path, so a project path from Rider's model matches the
  * one resolved from the .sln regardless of `..`/separator/casing differences. */

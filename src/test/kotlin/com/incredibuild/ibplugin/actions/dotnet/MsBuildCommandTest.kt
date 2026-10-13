@@ -104,6 +104,65 @@ class MsBuildCommandTest {
         assertTrue(app.arguments.contains("-p:SolutionExt=.sln"))
     }
 
+    private val slnx = """
+        <Solution>
+          <Configurations>
+            <BuildType Name="Debug" />
+            <BuildType Name="Release" />
+            <Platform Name="Any CPU" />
+            <Platform Name="x64" />
+            <Platform Name="x86" />
+          </Configurations>
+          <Folder Name="/src/">
+            <Project Path="src/App/App.csproj">
+              <Platform Solution="*|x64" Project="x64" />
+              <BuildType Solution="Debug|*" Project="Release" />
+            </Project>
+          </Folder>
+          <Project Path="Lib\Lib.csproj" />
+          <Project Path="Native\Native.vcxproj" />
+        </Solution>
+    """.trimIndent()
+
+    @Test
+    fun `slnx parsing maps managed projects to Any CPU by default`() {
+        val lib = parseSlnxProjectConfigurations(slnx, solutionDir)[normalizedPath(libProject)]!!
+        assertEquals("Debug|Any CPU", lib["Debug|Any CPU"])
+        assertEquals("Release|Any CPU", lib["Release|x64"])
+    }
+
+    @Test
+    fun `slnx parsing applies a project's own rules over the defaults`() {
+        val app = parseSlnxProjectConfigurations(slnx, solutionDir)[normalizedPath(appProject)]!!
+        assertEquals("Release|x64", app["Debug|x64"])
+        assertEquals("Release|Any CPU", app["Debug|Any CPU"])
+        assertEquals("Release|x64", app["Release|x64"])
+    }
+
+    @Test
+    fun `slnx parsing maps x86 to Win32 for C++ projects`() {
+        val native = File(solutionDir, "Native${File.separator}Native.vcxproj").path
+        val mapping = parseSlnxProjectConfigurations(slnx, solutionDir)[normalizedPath(native)]!!
+        assertEquals("Debug|Win32", mapping["Debug|x86"])
+        assertEquals("Debug|x64", mapping["Debug|x64"])
+    }
+
+    @Test
+    fun `slnx parsing defaults the solution configurations when none are declared`() {
+        val mappings = parseSlnxProjectConfigurations("""<Solution><Project Path="Lib/Lib.csproj" /></Solution>""", solutionDir)
+        assertEquals(setOf("Debug|Any CPU", "Release|Any CPU"), mappings[normalizedPath(libProject)]!!.keys)
+    }
+
+    @Test
+    fun `projects build of an slnx keeps a managed project on AnyCPU for an x64 solution`() {
+        val mappings = parseSlnxProjectConfigurations(slnx, solutionDir)
+        val build = projectsBuild(msBuild, solutionFile, listOf(libProject), "Debug", "x64", mappings)
+        assertEquals(
+            listOf(libProject, "-t:Build", "-p:Configuration=Debug", "-p:Platform=AnyCPU"),
+            build.commands.single().arguments.take(4)
+        )
+    }
+
     @Test
     fun `projects build falls back to the solution configuration without a mapping`() {
         val build = projectsBuild(msBuild, solutionFile, listOf(appProject), "Release", "Any CPU", emptyMap())
@@ -130,20 +189,61 @@ class MsBuildCommandTest {
         assertTrue(projects.commands.single().arguments.contains(RESTORE_ARGUMENT))
     }
 
-    @Test
-    fun `needsRestore is true only when a project has no assets file`() {
+    private fun withTempDir(block: (File) -> Unit) {
         val root = Files.createTempDirectory("msbuild-restore-test").toFile()
         try {
-            val restored = File(root, "Restored/Restored.csproj").apply { parentFile.mkdirs(); writeText("<Project/>") }
-            File(restored.parentFile, "obj/project.assets.json").apply { parentFile.mkdirs(); writeText("{}") }
-            val fresh = File(root, "Fresh/Fresh.csproj").apply { parentFile.mkdirs(); writeText("<Project/>") }
-
-            assertFalse(needsRestore(listOf(restored.path)))
-            assertTrue(needsRestore(listOf(restored.path, fresh.path)))
-            assertFalse(needsRestore(emptyList()))
+            block(root)
         } finally {
             root.deleteRecursively()
         }
+    }
+
+    private fun File.project(relativePath: String, text: String) =
+        File(this, relativePath).apply { parentFile.mkdirs(); writeText(text) }
+
+    private fun File.assetsFile(relativeDir: String) =
+        File(this, "$relativeDir/project.assets.json").apply { parentFile.mkdirs(); writeText("{}") }
+
+    private val sdkProject = """<Project Sdk="Microsoft.NET.Sdk"/>"""
+
+    @Test
+    fun `needsRestore is true only when an SDK-style project has no assets file`() = withTempDir { root ->
+        val restored = root.project("Restored/Restored.csproj", sdkProject)
+        root.assetsFile("Restored/obj")
+        val fresh = root.project("Fresh/Fresh.csproj", sdkProject)
+
+        assertFalse(needsRestore(listOf(restored.path)))
+        assertTrue(needsRestore(listOf(restored.path, fresh.path)))
+        assertFalse(needsRestore(emptyList()))
+    }
+
+    @Test
+    fun `needsRestore ignores projects that never get an assets file`() = withTempDir { root ->
+        val classic = root.project("Classic/Classic.csproj", """<Project ToolsVersion="15.0"><Import Project="x.props"/></Project>""")
+        val shared = root.project("Shared/Shared.shproj", """<Project><Import Project="Shared.projitems"/></Project>""")
+        val cpp = root.project("Native/Native.vcxproj", """<Project DefaultTargets="Build"/>""")
+        val missing = File(root, "Gone/Gone.csproj").path
+
+        assertFalse(needsRestore(listOf(classic.path, shared.path, cpp.path, missing)))
+    }
+
+    @Test
+    fun `needsRestore counts classic projects using PackageReference`() = withTempDir { root ->
+        val classic = root.project(
+            "Classic/Classic.csproj",
+            """<Project ToolsVersion="15.0"><ItemGroup><PackageReference Include="X"/></ItemGroup></Project>"""
+        )
+        assertTrue(needsRestore(listOf(classic.path)))
+        root.assetsFile("Classic/obj")
+        assertFalse(needsRestore(listOf(classic.path)))
+    }
+
+    @Test
+    fun `needsRestore finds the assets file in the artifacts output layout`() = withTempDir { root ->
+        val app = root.project("src/App/App.csproj", sdkProject)
+        assertTrue(needsRestore(listOf(app.path)))
+        root.assetsFile("artifacts/obj/App")
+        assertFalse(needsRestore(listOf(app.path)))
     }
 
     @Test

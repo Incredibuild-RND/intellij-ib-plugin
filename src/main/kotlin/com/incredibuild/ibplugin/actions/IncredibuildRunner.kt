@@ -923,12 +923,27 @@ object IncredibuildRunner {
         return script.toString()
     }
 
-    /** Wraps [value] as a cmd.exe double-quoted token (after [batchEscaped]), needed only when
-     * it contains whitespace. */
+    /**
+     * Wraps [value] as a cmd.exe double-quoted token (after [batchEscaped]), needed only when it
+     * is empty, contains whitespace, or contains a character cmd.exe would otherwise treat as an
+     * operator (`&`, `|`, `<`, `>`, `^`, `(`, `)` - e.g. a solution under `C:\R&D\`).
+     *
+     * Inside the quotes, the receiving program (MSBuild, cmake, ... - anything parsing its
+     * command line the MSVC runtime / CommandLineToArgvW way) treats backslashes right before a
+     * `"` as escapes, so a value ending in backslashes - `-p:SolutionDir=C:\My Projects\App\` -
+     * would otherwise turn the closing quote into a literal one and swallow every argument after
+     * it. Doubling those trailing backslashes is that same parser's escape for them.
+     */
     internal fun cmdQuoted(value: String): String {
         val escaped = batchEscaped(value)
-        return if (escaped.any { it.isWhitespace() }) "\"$escaped\"" else escaped
+        if (escaped.isNotEmpty() && escaped.none { it.isWhitespace() || it in CMD_SPECIAL_CHARACTERS }) {
+            return escaped
+        }
+        val trailingBackslashes = escaped.length - escaped.trimEnd('\\').length
+        return "\"" + escaped + "\\".repeat(trailingBackslashes) + "\""
     }
+
+    private const val CMD_SPECIAL_CHARACTERS = "&|<>^()"
 
     /** Escapes [value] for literal use in a .cmd file: cmd.exe expands `%...%` variable
      * references anywhere on a line it parses - including inside a `set "KEY=VALUE"` value and
