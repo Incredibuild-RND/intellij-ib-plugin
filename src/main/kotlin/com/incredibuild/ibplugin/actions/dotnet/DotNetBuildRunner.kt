@@ -71,15 +71,26 @@ internal object DotNetBuildRunner {
                         restore = needsRestore(readSolutionProjectFiles(request.solutionFile))
                     )
 
-                    DotNetBuildKind.BUILD_PROJECTS -> projectsBuild(
-                        tool,
-                        request.solutionFile,
-                        request.projectFiles,
-                        request.configuration,
-                        request.platform,
-                        readProjectConfigurations(request.solutionFile),
-                        restore = needsRestore(request.projectFiles)
-                    )
+                    DotNetBuildKind.BUILD_PROJECTS -> {
+                        val targetNames = readProjectTargets(request.solutionFile)
+                        val missing = request.projectFiles.filter { normalizedPath(it) !in targetNames }
+                        if (missing.isNotEmpty()) {
+                            return showError(
+                                project,
+                                "Could not find these projects in ${File(request.solutionFile).name}, so they can't be " +
+                                    "built through it:\n" + missing.joinToString("\n")
+                            )
+                        }
+                        projectsBuild(
+                            tool,
+                            request.solutionFile,
+                            request.projectFiles,
+                            request.configuration,
+                            request.platform,
+                            targetNames,
+                            restore = needsRestore(request.projectFiles)
+                        )
+                    }
                 }
 
                 IncredibuildRunner.launchNativeBuild(
@@ -93,16 +104,18 @@ internal object DotNetBuildRunner {
         })
     }
 
-    private fun readProjectConfigurations(solutionFile: String): Map<String, Map<String, String>> {
+    /** The solution's per-project build targets - see [solutionProjectTargets]. Empty if the
+     * solution can't be read, which then reports every selected project as not found. */
+    private fun readProjectTargets(solutionFile: String): Map<String, String> {
         val file = File(solutionFile)
         return try {
-            when (file.extension.lowercase()) {
-                "sln" -> parseSolutionProjectConfigurations(file.readText(), file.absoluteFile.parentFile)
-                "slnx" -> parseSlnxProjectConfigurations(file.readText(), file.absoluteFile.parentFile)
-                else -> emptyMap()
-            }
+            solutionProjectTargets(
+                file.readText(),
+                file.absoluteFile.parentFile,
+                isSlnx = file.extension.equals("slnx", ignoreCase = true)
+            )
         } catch (e: Exception) {
-            LOG.warn("Could not read project configuration mappings from $solutionFile", e)
+            LOG.warn("Could not read the project list from $solutionFile", e)
             emptyMap()
         }
     }

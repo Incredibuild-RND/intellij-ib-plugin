@@ -842,7 +842,7 @@ object IncredibuildRunner {
     /**
      * The .cmd [prepareNativeBuildWindows] points BuildConsole's /command= at: [NativeBuild.environment]
      * via `set`, then each command in turn, stopping at (and exiting with) the first non-zero
-     * exit code - so a multi-project build reports failure the same way a single command does.
+     * exit code - so a multi-command build reports failure the same way a single command does.
      */
     internal fun windowsWrapperScript(build: NativeBuild): String {
         val cmdLines = StringBuilder("@echo off\r\n")
@@ -870,8 +870,8 @@ object IncredibuildRunner {
      * command) is written into one script, each token quoted individually and safely via
      * [shellSingleQuoted].
      *
-     * ib_console runs exactly one command, so a [NativeBuild] with more than one (a multi-project
-     * MSBuild selection) has them chained inside a `/bin/sh -c` that ib_console runs instead -
+     * ib_console runs exactly one command, so a [NativeBuild] with more than one has them
+     * chained inside a `/bin/sh -c` that ib_console runs instead -
      * every process they start is still a descendant of ib_console, so all of it is accelerated.
      *
      * No custom `--profile` here, unlike [prepareBuildLinux]'s RustRover-specific one: C/C++

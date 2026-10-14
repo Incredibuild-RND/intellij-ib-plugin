@@ -38,19 +38,23 @@ class MsBuildCommandTest {
 
     private val sln = """
         Microsoft Visual Studio Solution File, Format Version 12.00
-        Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\App\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+        Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{33333333-3333-3333-3333-333333333333}"
         EndProject
-        Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{22222222-2222-2222-2222-222222222222}"
+        Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\App\App.csproj", "{11111111-1111-1111-1111-111111111111}"
+            ProjectSection(ProjectDependencies) = postProject
+                {22222222-2222-2222-2222-222222222222} = {22222222-2222-2222-2222-222222222222}
+            EndProjectSection
+        EndProject
+        Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "My.Lib", "Lib\Lib.csproj", "{22222222-2222-2222-2222-222222222222}"
         EndProject
         Global
-            GlobalSection(ProjectConfigurationPlatforms) = postSolution
-                {11111111-1111-1111-1111-111111111111}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-                {11111111-1111-1111-1111-111111111111}.Debug|Any CPU.Build.0 = Debug|Any CPU
-                {22222222-2222-2222-2222-222222222222}.Debug|Any CPU.ActiveCfg = Release|x64
-                {22222222-2222-2222-2222-222222222222}.Debug|Any CPU.Build.0 = Release|x64
+            GlobalSection(NestedProjects) = preSolution
+                {11111111-1111-1111-1111-111111111111} = {33333333-3333-3333-3333-333333333333}
             EndGlobalSection
         EndGlobal
     """.trimIndent()
+
+    private val targets = mapOf(normalizedPath(appProject) to "src\\App", normalizedPath(libProject) to "My_Lib")
 
     @Test
     fun `MsBuildTool fromPath runs dotnet through its msbuild verb`() {
@@ -84,98 +88,68 @@ class MsBuildCommandTest {
     }
 
     @Test
-    fun `sln parsing maps each project to its own configuration`() {
-        val mappings = parseSolutionProjectConfigurations(sln, solutionDir)
-        assertEquals("Debug|Any CPU", mappings[normalizedPath(appProject)]?.get("Debug|Any CPU"))
-        assertEquals("Release|x64", mappings[normalizedPath(libProject)]?.get("Debug|Any CPU"))
+    fun `sln project targets follow solution folders and MSBuild's name cleansing`() {
+        // App's ProjectDependencies line has the same {guid} = {guid} shape as a nesting one - it
+        // must not make Lib App's parent.
+        assertEquals(targets, solutionProjectTargets(sln, solutionDir, isSlnx = false))
     }
 
     @Test
-    fun `projects build uses each project's mapped configuration and solution context`() {
-        val mappings = parseSolutionProjectConfigurations(sln, solutionDir)
-        val build = projectsBuild(msBuild, solutionFile, listOf(appProject, libProject), "Debug", "Any CPU", mappings)
-
-        val (app, lib) = build.commands
-        assertEquals(listOf(appProject, "-t:Build", "-p:Configuration=Debug", "-p:Platform=AnyCPU"), app.arguments.take(4))
-        assertEquals(listOf(libProject, "-t:Build", "-p:Configuration=Release", "-p:Platform=x64"), lib.arguments.take(4))
-        assertTrue(app.arguments.contains("-p:SolutionDir=${solutionDir.path}${File.separator}"))
-        assertTrue(app.arguments.contains("-p:SolutionPath=$solutionFile"))
-        assertTrue(app.arguments.contains("-p:SolutionName=App"))
-        assertTrue(app.arguments.contains("-p:SolutionExt=.sln"))
-    }
-
-    private val slnx = """
-        <Solution>
-          <Configurations>
-            <BuildType Name="Debug" />
-            <BuildType Name="Release" />
-            <Platform Name="Any CPU" />
-            <Platform Name="x64" />
-            <Platform Name="x86" />
-          </Configurations>
-          <Folder Name="/src/">
-            <Project Path="src/App/App.csproj">
-              <Platform Solution="*|x64" Project="x64" />
-              <BuildType Solution="Debug|*" Project="Release" />
-            </Project>
-          </Folder>
-          <Project Path="Lib\Lib.csproj" />
-          <Project Path="Native\Native.vcxproj" />
-        </Solution>
-    """.trimIndent()
-
-    @Test
-    fun `slnx parsing maps managed projects to Any CPU by default`() {
-        val lib = parseSlnxProjectConfigurations(slnx, solutionDir)[normalizedPath(libProject)]!!
-        assertEquals("Debug|Any CPU", lib["Debug|Any CPU"])
-        assertEquals("Release|Any CPU", lib["Release|x64"])
-    }
-
-    @Test
-    fun `slnx parsing applies a project's own rules over the defaults`() {
-        val app = parseSlnxProjectConfigurations(slnx, solutionDir)[normalizedPath(appProject)]!!
-        assertEquals("Release|x64", app["Debug|x64"])
-        assertEquals("Release|Any CPU", app["Debug|Any CPU"])
-        assertEquals("Release|x64", app["Release|x64"])
-    }
-
-    @Test
-    fun `slnx parsing maps x86 to Win32 for C++ projects`() {
-        val native = File(solutionDir, "Native${File.separator}Native.vcxproj").path
-        val mapping = parseSlnxProjectConfigurations(slnx, solutionDir)[normalizedPath(native)]!!
-        assertEquals("Debug|Win32", mapping["Debug|x86"])
-        assertEquals("Debug|x64", mapping["Debug|x64"])
-    }
-
-    @Test
-    fun `slnx parsing defaults the solution configurations when none are declared`() {
-        val mappings = parseSlnxProjectConfigurations("""<Solution><Project Path="Lib/Lib.csproj" /></Solution>""", solutionDir)
-        assertEquals(setOf("Debug|Any CPU", "Release|Any CPU"), mappings[normalizedPath(libProject)]!!.keys)
-    }
-
-    @Test
-    fun `projects build of an slnx keeps a managed project on AnyCPU for an x64 solution`() {
-        val mappings = parseSlnxProjectConfigurations(slnx, solutionDir)
-        val build = projectsBuild(msBuild, solutionFile, listOf(libProject), "Debug", "x64", mappings)
+    fun `sln project targets nest folders inside folders`() {
+        val nested = """
+            Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{33333333-3333-3333-3333-333333333333}"
+            EndProject
+            Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "my.dir (x)", "my.dir (x)", "{44444444-4444-4444-4444-444444444444}"
+            EndProject
+            Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Lib", "Lib\Lib.csproj", "{22222222-2222-2222-2222-222222222222}"
+            EndProject
+            Global
+                GlobalSection(NestedProjects) = preSolution
+                    {44444444-4444-4444-4444-444444444444} = {33333333-3333-3333-3333-333333333333}
+                    {22222222-2222-2222-2222-222222222222} = {44444444-4444-4444-4444-444444444444}
+                EndGlobalSection
+            EndGlobal
+        """.trimIndent()
         assertEquals(
-            listOf(libProject, "-t:Build", "-p:Configuration=Debug", "-p:Platform=AnyCPU"),
-            build.commands.single().arguments.take(4)
+            mapOf(normalizedPath(libProject) to "src\\my_dir _x_\\Lib"),
+            solutionProjectTargets(nested, solutionDir, isSlnx = false)
         )
     }
 
     @Test
-    fun `projects build falls back to the solution configuration without a mapping`() {
-        val build = projectsBuild(msBuild, solutionFile, listOf(appProject), "Release", "Any CPU", emptyMap())
+    fun `slnx project targets use folder paths and project file names`() {
+        val slnx = """
+            <Solution>
+              <Folder Name="/src/my.dir (x)/">
+                <Project Path="Lib\Lib.csproj" />
+              </Folder>
+              <Project Path="src/App/App.csproj" />
+            </Solution>
+        """.trimIndent()
         assertEquals(
-            listOf(appProject, "-t:Build", "-p:Configuration=Release", "-p:Platform=AnyCPU"),
-            build.commands.single().arguments.take(4)
+            mapOf(normalizedPath(libProject) to "src\\my_dir _x_\\Lib", normalizedPath(appProject) to "App"),
+            solutionProjectTargets(slnx, solutionDir, isSlnx = true)
         )
+    }
+
+    @Test
+    fun `projects build goes through the solution with one target per project`() {
+        // Through the solution, so MSBuild maps every project - and every project it references -
+        // to the solution's own configuration for it, instead of passing the selected one on.
+        val build = projectsBuild(msBuild, solutionFile, listOf(appProject, libProject), "Release", "x64", targets)
+        val command = build.commands.single()
+        assertEquals(
+            listOf(solutionFile, "-t:src\\App;My_Lib", "-p:Configuration=Release", "-p:Platform=x64"),
+            command.arguments.take(4)
+        )
+        assertTrue(command.arguments.containsAll(COMMON_MSBUILD_ARGUMENTS))
+        assertEquals(solutionDir.path, build.workingDirectory)
     }
 
     @Test
     fun `builds leave restore to Rider by default`() {
         val solution = solutionBuild(msBuild, solutionFile, DotNetBuildKind.BUILD_SOLUTION, "Debug", "Any CPU")
-        val projects = projectsBuild(msBuild, solutionFile, listOf(appProject), "Debug", "Any CPU", emptyMap())
+        val projects = projectsBuild(msBuild, solutionFile, listOf(appProject), "Debug", "Any CPU", targets)
         assertFalse(solution.commands.single().arguments.contains(RESTORE_ARGUMENT))
         assertFalse(projects.commands.single().arguments.contains(RESTORE_ARGUMENT))
     }
@@ -184,7 +158,7 @@ class MsBuildCommandTest {
     fun `builds restore when asked to`() {
         val solution = solutionBuild(msBuild, solutionFile, DotNetBuildKind.BUILD_SOLUTION, "Debug", "Any CPU", restore = true)
         val projects =
-            projectsBuild(msBuild, solutionFile, listOf(appProject), "Debug", "Any CPU", emptyMap(), restore = true)
+            projectsBuild(msBuild, solutionFile, listOf(appProject), "Debug", "Any CPU", targets, restore = true)
         assertTrue(solution.commands.single().arguments.contains(RESTORE_ARGUMENT))
         assertTrue(projects.commands.single().arguments.contains(RESTORE_ARGUMENT))
     }
@@ -266,13 +240,6 @@ class MsBuildCommandTest {
             </Solution>
         """.trimIndent()
         assertEquals(listOf(appProject, libProject), solutionProjectFiles(slnx, solutionDir))
-    }
-
-    @Test
-    fun `projectPlatformName only rewrites Any CPU`() {
-        assertEquals("AnyCPU", projectPlatformName("Any CPU"))
-        assertEquals("x64", projectPlatformName("x64"))
-        assertEquals("Mixed Platforms", projectPlatformName("Mixed Platforms"))
     }
 
     @Test

@@ -163,11 +163,11 @@ private val SLNX_PROJECT_PATH = Regex("""<Project\s[^>]*Path="([^"]+)"""")
  * Solution folders and non-project entries (anything not ending in "proj") are skipped.
  */
 internal fun solutionProjectFiles(solutionText: String, solutionDir: File): List<String> {
-    val relativePaths = SLN_PROJECT_LINE.findAll(solutionText).map { it.groupValues[1] } +
+    val relativePaths = SLN_PROJECT_LINE.findAll(solutionText).map { it.groupValues[2] } +
         SLNX_PROJECT_PATH.findAll(solutionText).map { it.groupValues[1] }
     return relativePaths
         .filter { it.endsWith("proj", ignoreCase = true) }
-        .map { File(solutionDir, it.replace('\\', File.separatorChar).replace('/', File.separatorChar)).path }
+        .map { File(solutionDir, nativeSeparators(it)).path }
         .distinct()
         .toList()
 }
@@ -197,20 +197,17 @@ internal fun solutionBuild(
 /**
  * The accelerated build for individually selected projects - the equivalent of Rider's own
  * Build Selection, which also builds each selected project together with the projects it
- * references (MSBuild follows ProjectReferences by itself).
+ * references.
  *
- * Each project is built directly rather than through the solution, since a solution can only be
- * asked to build a specific project by a target name derived from its solution-folder path - so
- * the context the solution would otherwise have provided is passed explicitly instead:
- *  - the project's own configuration|platform that the solution's active configuration maps it
- *    to ([mappings], from [parseSolutionProjectConfigurations] or
- *    [parseSlnxProjectConfigurations]) - falling back to the solution
- *    configuration's own names, as Visual Studio does for a project with no mapping of its own;
- *  - the `SolutionDir`/`SolutionPath`/... properties MSBuild would have set had it come in
- *    through the solution, which build logic commonly relies on (e.g. a shared output folder).
- *
- * One MSBuild invocation per project, run one after the other: MSBuild only accepts a single
- * project per invocation. Each one is still parallel within itself (see [COMMON_MSBUILD_ARGUMENTS]).
+ * Built through the solution, asking it for just those projects by the per-project targets its
+ * build defines ([targetNames], from [solutionProjectTargets] - every one of [projectFiles] must
+ * be in it), rather than by building each project file directly. Only a solution build maps each
+ * project, and each project it references, to the configuration|platform the solution's active
+ * configuration assigns it: a project built directly passes its own -p:Configuration/-p:Platform
+ * on to its references unchanged, so a library the solution builds as Debug|Any CPU would be
+ * built as the app's Release|x64, into a different bin\ than Rider's own build uses. Going through
+ * the solution also sets the SolutionDir/SolutionPath/... properties build logic relies on, and
+ * builds all the selected projects in one parallel invocation.
  */
 internal fun projectsBuild(
     tool: MsBuildTool,
@@ -218,145 +215,90 @@ internal fun projectsBuild(
     projectFiles: List<String>,
     configuration: String,
     platform: String,
-    mappings: Map<String, Map<String, String>>,
+    targetNames: Map<String, String>,
     restore: Boolean = false
 ): NativeBuild {
-    val solution = File(solutionFile).absoluteFile
-    val solutionDir = solution.parent.trimEnd(File.separatorChar) + File.separator
-    val solutionProperties = listOf(
-        "-p:SolutionDir=$solutionDir",
-        "-p:SolutionPath=${solution.path}",
-        "-p:SolutionName=${solution.nameWithoutExtension}",
-        "-p:SolutionFileName=${solution.name}",
-        "-p:SolutionExt=.${solution.extension}",
-    )
-
-    val commands = projectFiles.map { projectFile ->
-        val mapped = mappings[normalizedPath(projectFile)]?.get("$configuration|$platform")
-        val (projectConfiguration, projectPlatform) = mapped?.split('|', limit = 2)?.takeIf { it.size == 2 }
-            ?: listOf(configuration, platform)
-        val arguments = tool.leadingArguments + listOf(
-            projectFile,
-            "-t:${DotNetBuildKind.BUILD_PROJECTS.msBuildTarget}",
-            "-p:Configuration=$projectConfiguration",
-            "-p:Platform=${projectPlatformName(projectPlatform)}",
-        ) + solutionProperties + restoreArguments(restore) + COMMON_MSBUILD_ARGUMENTS
-        NativeCommand(tool.executable, arguments)
-    }
-    return NativeBuild(commands, solution.parent)
+    val targets = projectFiles.map { targetNames.getValue(normalizedPath(it)) }
+    val arguments = tool.leadingArguments + listOf(
+        solutionFile,
+        "-t:${targets.joinToString(";")}",
+        "-p:Configuration=$configuration",
+        "-p:Platform=$platform",
+    ) + restoreArguments(restore) + COMMON_MSBUILD_ARGUMENTS
+    return NativeBuild(listOf(NativeCommand(tool.executable, arguments)), File(solutionFile).absoluteFile.parent)
 }
 
 private fun restoreArguments(restore: Boolean): List<String> = if (restore) listOf(RESTORE_ARGUMENT) else emptyList()
 
-/**
- * Solutions spell the .NET "any CPU" platform with a space ("Any CPU"), project files without
- * one ("AnyCPU") - MSBuild's own solution-to-project translation does the same rewrite when it
- * builds a project through a solution, so it has to be done here when building one directly.
- */
-internal fun projectPlatformName(platform: String): String =
-    if (platform.equals("Any CPU", ignoreCase = true)) "AnyCPU" else platform
-
+/** `Project("{type}") = "name", "path", "{guid}"` - solution folders included. */
 private val SLN_PROJECT_LINE = Regex(
-    """^Project\("\{[^}]*}"\)\s*=\s*"[^"]*"\s*,\s*"([^"]*)"\s*,\s*"\{([^}]*)}"""",
+    """^Project\("\{[^}]*}"\)\s*=\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"\{([^}]*)}"""",
     RegexOption.MULTILINE
 )
 
-/** e.g. `{GUID}.Debug|Any CPU.ActiveCfg = Debug|x64` */
-private val SLN_ACTIVE_CFG_LINE = Regex(
-    """^\s*\{([^}]*)}\.([^.=]+\|[^=]+?)\.ActiveCfg\s*=\s*(.+?)\s*$""",
-    RegexOption.MULTILINE
-)
+private val SLN_NESTED_PROJECTS_SECTION =
+    Regex("""GlobalSection\(NestedProjects\)(.*?)EndGlobalSection""", RegexOption.DOT_MATCHES_ALL)
+
+/** `{child} = {parent}` - only meaningful inside [SLN_NESTED_PROJECTS_SECTION]: a project's
+ * ProjectDependencies section has lines of exactly the same shape. */
+private val SLN_NESTED_LINE = Regex("""\{([^}]*)}\s*=\s*\{([^}]*)}""")
+
+/** The characters MSBuild replaces with `_` in a solution's per-project target names. */
+private const val TARGET_NAME_CHARACTERS_TO_CLEANSE = "%$@;.()'"
+
+private fun cleansedTargetName(name: String): String =
+    name.map { if (it in TARGET_NAME_CHARACTERS_TO_CLEANSE) '_' else it }.joinToString("")
 
 /**
- * Reads a classic (.sln) solution's own record of which project configuration|platform each
- * solution configuration|platform builds (its `ProjectConfigurationPlatforms` section), keyed by
- * [normalizedPath] of each project file and then by solution "Configuration|Platform".
- *
- * Returns an empty map for a .sln this can't parse - [projectsBuild] then falls back to the
- * solution configuration's own names. An XML .slnx is read by [parseSlnxProjectConfigurations].
+ * The target a solution build defines for building just one of its projects, keyed by
+ * [normalizedPath] of each project file: the project's solution-folder path and its name, joined
+ * with `\`, each part with [TARGET_NAME_CHARACTERS_TO_CLEANSE] replaced by `_` - e.g. the "My.Lib"
+ * project in the "src" folder is `src\My_Lib`. That's the name MSBuild's solution build gives it,
+ * for a .sln (project names as written in it, folders from its NestedProjects section) and a .slnx
+ * (project file names, folders from each `<Folder Name="/a/b/">`) alike.
  */
-internal fun parseSolutionProjectConfigurations(solutionText: String, solutionDir: File): Map<String, Map<String, String>> {
-    val projectPathByGuid = HashMap<String, String>()
-    for (match in SLN_PROJECT_LINE.findAll(solutionText)) {
-        val relativePath = match.groupValues[1].replace('\\', File.separatorChar).replace('/', File.separatorChar)
-        val guid = match.groupValues[2].uppercase()
-        projectPathByGuid[guid] = normalizedPath(File(solutionDir, relativePath).path)
+internal fun solutionProjectTargets(solutionText: String, solutionDir: File, isSlnx: Boolean): Map<String, String> =
+    if (isSlnx) slnxProjectTargets(solutionText, solutionDir) else slnProjectTargets(solutionText, solutionDir)
+
+private fun slnProjectTargets(solutionText: String, solutionDir: File): Map<String, String> {
+    class Entry(val name: String, val path: String)
+
+    val entries = SLN_PROJECT_LINE.findAll(solutionText)
+        .associate { it.groupValues[3].uppercase() to Entry(it.groupValues[1], it.groupValues[2]) }
+    val parentOf = SLN_NESTED_PROJECTS_SECTION.find(solutionText)?.groupValues?.get(1)
+        ?.let { section -> SLN_NESTED_LINE.findAll(section).associate { it.groupValues[1].uppercase() to it.groupValues[2].uppercase() } }
+        .orEmpty()
+
+    fun targetName(guid: String): String {
+        val parts = ArrayList<String>()
+        var current: String? = guid
+        // Bounded by the number of entries, so a malformed (cyclic) NestedProjects can't hang this.
+        while (current != null && parts.size <= entries.size) {
+            parts += cleansedTargetName(entries.getValue(current).name)
+            current = parentOf[current]?.takeIf { it in entries }
+        }
+        return parts.asReversed().joinToString("\\")
     }
 
-    val result = HashMap<String, MutableMap<String, String>>()
-    for (match in SLN_ACTIVE_CFG_LINE.findAll(solutionText)) {
-        val projectPath = projectPathByGuid[match.groupValues[1].uppercase()] ?: continue
-        result.getOrPut(projectPath) { HashMap() }[match.groupValues[2].trim()] = match.groupValues[3]
-    }
-    return result
+    return entries.filterValues { it.path.endsWith("proj", ignoreCase = true) }
+        .entries.associate { (guid, entry) -> normalizedPath(File(solutionDir, nativeSeparators(entry.path)).path) to targetName(guid) }
 }
 
-/** .NET project types whose platform a .slnx maps to "Any CPU" unless told otherwise. */
-private val MANAGED_PROJECT_EXTENSIONS = setOf("csproj", "vbproj", "fsproj")
-
-/**
- * The same mapping as [parseSolutionProjectConfigurations], for an XML (.slnx) solution.
- *
- * Unlike a .sln, a .slnx doesn't spell out every project's configuration|platform for every
- * solution one - only the exceptions to its project type's defaults, as `<BuildType>`/`<Platform>`
- * rules inside each `<Project>`. The defaults are what makes a plain fallback to the solution's
- * own names wrong: a .NET project builds as "Any CPU" for every solution platform (a solution's
- * "x64" doesn't make a C# library x64 - it would put its output in bin\x64\ instead of the bin\
- * Rider's own build uses), and a C++ project builds the solution's "x86" as "Win32". So each
- * project starts from its type's default and its own rules are applied on top, in order, the
- * last matching one winning.
- *
- * Solution configurations are the `<Configurations>` section's build types × platforms, each
- * defaulting as Visual Studio's does when not declared (Debug and Release; Any CPU).
- */
-internal fun parseSlnxProjectConfigurations(solutionText: String, solutionDir: File): Map<String, Map<String, String>> {
-    val root = parseXml(solutionText).documentElement
-    val declarations = root.childElements("Configurations").firstOrNull()
-    val buildTypes = declarations?.childElements("BuildType")?.mapNotNull { it.attributeOrNull("Name") }?.toList()
-        .orEmpty().ifEmpty { listOf("Debug", "Release") }
-    val platforms = declarations?.childElements("Platform")?.mapNotNull { it.attributeOrNull("Name") }?.toList()
-        .orEmpty().ifEmpty { listOf("Any CPU") }
-
-    val result = HashMap<String, Map<String, String>>()
-    val projects = root.getElementsByTagName("Project")
+private fun slnxProjectTargets(solutionText: String, solutionDir: File): Map<String, String> {
+    val projects = parseXml(solutionText).documentElement.getElementsByTagName("Project")
+    val result = HashMap<String, String>()
     for (i in 0 until projects.length) {
         val project = projects.item(i) as Element
         val path = project.attributeOrNull("Path") ?: continue
-        val projectFile = File(solutionDir, path.replace('\\', File.separatorChar).replace('/', File.separatorChar))
-        val rules = project.childElements().filter { it.tagName == "BuildType" || it.tagName == "Platform" }.toList()
-
-        val mapping = HashMap<String, String>()
-        for (buildType in buildTypes) {
-            for (platform in platforms) {
-                var projectBuildType = buildType
-                var projectPlatform = defaultSlnxProjectPlatform(projectFile.extension.lowercase(), platform)
-                for (rule in rules) {
-                    val target = rule.attributeOrNull("Project") ?: continue
-                    if (!slnxRuleMatches(rule.attributeOrNull("Solution"), buildType, platform)) continue
-                    if (rule.tagName == "BuildType") projectBuildType = target else projectPlatform = target
-                }
-                mapping["$buildType|$platform"] = "$projectBuildType|$projectPlatform"
-            }
-        }
-        result[normalizedPath(projectFile.path)] = mapping
+        val projectFile = File(solutionDir, nativeSeparators(path))
+        val folder = (project.parentNode as? Element)?.takeIf { it.tagName == "Folder" }?.attributeOrNull("Name")
+        val parts = folder?.split('/')?.filter { it.isNotEmpty() }.orEmpty() + projectFile.nameWithoutExtension
+        result[normalizedPath(projectFile.path)] = parts.joinToString("\\") { cleansedTargetName(it) }
     }
     return result
 }
 
-private fun defaultSlnxProjectPlatform(extension: String, solutionPlatform: String): String = when {
-    extension in MANAGED_PROJECT_EXTENSIONS -> "Any CPU"
-    extension == "vcxproj" && solutionPlatform.equals("x86", ignoreCase = true) -> "Win32"
-    else -> solutionPlatform
-}
-
-/** A rule's `Solution="BuildType|Platform"` pattern - either half may be `*` or left out, and a
- * rule without one applies to every solution configuration. */
-private fun slnxRuleMatches(pattern: String?, buildType: String, platform: String): Boolean {
-    if (pattern.isNullOrBlank()) return true
-    val parts = pattern.split('|', limit = 2).map { it.trim() }
-    fun matches(part: String?, value: String) = part.isNullOrEmpty() || part == "*" || part.equals(value, ignoreCase = true)
-    return matches(parts[0], buildType) && matches(parts.getOrNull(1), platform)
-}
+private fun nativeSeparators(path: String): String = path.replace('\\', File.separatorChar).replace('/', File.separatorChar)
 
 private fun parseXml(text: String): Document {
     val factory = DocumentBuilderFactory.newInstance().apply {
@@ -367,15 +309,9 @@ private fun parseXml(text: String): Document {
     return factory.newDocumentBuilder().parse(InputSource(StringReader(text)))
 }
 
-private fun Element.childElements(tagName: String? = null): Sequence<Element> =
-    (0 until childNodes.length).asSequence()
-        .map { childNodes.item(it) }
-        .filterIsInstance<Element>()
-        .filter { tagName == null || it.tagName == tagName }
-
 private fun Element.attributeOrNull(name: String): String? = getAttribute(name).takeIf { it.isNotEmpty() }
 
 /** Canonical, case-insensitive form of a path, so a project path from Rider's model matches the
- * one resolved from the .sln regardless of `..`/separator/casing differences. */
+ * one resolved from the solution regardless of `..`/separator/casing differences. */
 internal fun normalizedPath(path: String): String =
     File(path).absoluteFile.normalize().path.replace('\\', '/').lowercase()
