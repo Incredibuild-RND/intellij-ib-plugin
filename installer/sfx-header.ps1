@@ -1,7 +1,7 @@
 <#
 Installs (or updates) the Incredibuild Build Acceleration plugin into every
-supported JetBrains IDE found on this machine (RustRover, and IntelliJ IDEA
-Ultimate). Meant to be run from inside the self-extracting installer,
+supported JetBrains IDE found on this machine (RustRover, IntelliJ IDEA
+Ultimate, CLion, and Rider). Meant to be run from inside the self-extracting installer,
 alongside intellij-ib-plugin.zip.
 
 Detects installs by reading each product's own product-info.json rather than

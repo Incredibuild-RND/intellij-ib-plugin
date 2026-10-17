@@ -33,10 +33,35 @@ The setting is off by default. While it is off - or if Incredibuild isn't instal
 those actions behave exactly as they do without this plugin. The actions in the **Incredibuild** menu
 always use Incredibuild, whichever way the setting is set.
 
+### Rider (.NET)
+
+In Rider, the **Build** menu gets dedicated Incredibuild actions right after the standard ones (they are
+also in the **Incredibuild** menu):
+
+- **Build Solution with Incredibuild** - builds the solution in its active configuration and platform
+- **Rebuild Solution with Incredibuild** - cleans and rebuilds it
+- **Build Selected Projects with Incredibuild** - builds the projects selected in the Solution Explorer,
+  along with the projects they reference
+
+The same actions are in the Solution Explorer's context menu on the solution, solution folders and
+projects, and each can be bound to a shortcut under **Settings/Preferences > Keymap** (search for
+"Incredibuild"). They have no default shortcuts, so none of Rider's own are taken over.
+
+They run MSBuild on the solution exactly as it is configured: the active configuration and platform
+are respected (for selected projects, through the solution's own project configuration mapping), and
+an open solution filter (`.slnf`) limits the build the same way it limits Rider's own. Nothing about the
+solution or its projects is changed. While an accelerated build runs, the status bar shows
+*Building <solution> with Incredibuild*, the **Incredibuild** tool window shows its output under a banner
+naming the configuration and MSBuild used, and a notification reports the result.
+
+MSBuild is detected automatically: the newest Visual Studio / Build Tools `MSBuild.exe` with the .NET SDK component on Windows,
+otherwise the .NET SDK's `dotnet msbuild`. Rider's own MSBuild selection lives in its backend settings,
+which plugins can't read, so a different one can be set under **Settings/Preferences > Tools > Incredibuild**.
+
 ### Settings
 
 **Settings/Preferences > Tools > Incredibuild** configures the number of parallel jobs (`-j`)
-accelerated builds request, and the opt-in above.
+accelerated Cargo/CMake builds request, the opt-in above, and (in Rider) the MSBuild to use.
 
 If Incredibuild isn't installed on the machine, the menu commands offer to open
 [incredibuild.com](https://www.incredibuild.com/) to download it.
@@ -46,6 +71,7 @@ If Incredibuild isn't installed on the machine, the menu commands offer to open
 - RustRover, or IntelliJ IDEA Ultimate with the Rust plugin - 2026.1 or 2026.2 (builds 261-262).
   The Rust plugin is released for one IDE line at a time, and this plugin depends on it, so support
   for a newer line follows a Rust plugin release for it.
+- Or Rider 2026.2, with MSBuild (Visual Studio / Build Tools) or the .NET SDK installed.
 - [Incredibuild](https://www.incredibuild.com/) installed, on Windows or Linux:
   - Windows: 10.37.1 or later
   - Linux: 4.29.3 or later, installed under `/opt/incredibuild`

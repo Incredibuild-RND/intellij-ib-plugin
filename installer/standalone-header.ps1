@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
 Installs (or updates) the "Incredibuild Build Acceleration" plugin into every
-supported JetBrains IDE found on this machine (RustRover, and IntelliJ IDEA
-Ultimate).
+supported JetBrains IDE found on this machine (RustRover, IntelliJ IDEA
+Ultimate, CLion, and Rider).
 
 .DESCRIPTION
 Fully self-contained: the plugin zip is embedded below as base64, so this is

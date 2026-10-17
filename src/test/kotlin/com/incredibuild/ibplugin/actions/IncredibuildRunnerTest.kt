@@ -56,6 +56,24 @@ class IncredibuildRunnerTest {
     }
 
     @Test
+    fun `cmdQuoted doubles trailing backslashes so they don't escape the closing quote`() {
+        assertEquals(
+            "\"-p:SolutionDir=C:\\My Projects\\App\\\\\"",
+            IncredibuildRunner.cmdQuoted("-p:SolutionDir=C:\\My Projects\\App\\")
+        )
+        // Unquoted, a trailing backslash is just a literal one and needs nothing.
+        assertEquals("-p:SolutionDir=C:\\App\\", IncredibuildRunner.cmdQuoted("-p:SolutionDir=C:\\App\\"))
+    }
+
+    @Test
+    fun `cmdQuoted quotes cmd operator characters and empty values`() {
+        assertEquals("\"C:\\R&D\\App.sln\"", IncredibuildRunner.cmdQuoted("C:\\R&D\\App.sln"))
+        assertEquals("\"C:\\Apps (old)\\App.sln\"", IncredibuildRunner.cmdQuoted("C:\\Apps (old)\\App.sln"))
+        assertEquals("\"a^b\"", IncredibuildRunner.cmdQuoted("a^b"))
+        assertEquals("\"\"", IncredibuildRunner.cmdQuoted(""))
+    }
+
+    @Test
     fun `VALID_SHELL_IDENTIFIER accepts ordinary environment variable names`() {
         assertTrue(VALID_SHELL_IDENTIFIER.matches("PATH"))
         assertTrue(VALID_SHELL_IDENTIFIER.matches("_private"))

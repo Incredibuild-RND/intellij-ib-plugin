@@ -17,10 +17,12 @@ package com.incredibuild.ibplugin.actions
 
 import com.incredibuild.ibplugin.actions.cmake.CMakeBuildKind
 import com.incredibuild.ibplugin.actions.cmake.CMakeBuildResolution
-import com.incredibuild.ibplugin.actions.cmake.ResolvedCMakeBuild
 import com.incredibuild.ibplugin.actions.cmake.deriveCMakeBuild
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.impl.ConsoleViewImpl
+import com.intellij.execution.ui.ConsoleViewContentType
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.execution.process.ColoredProcessHandler
 import com.intellij.execution.process.KillableProcessHandler
 import com.intellij.execution.process.OSProcessHandler
@@ -59,6 +61,11 @@ private const val MINIMUM_RUST_BUILD_VERSION = "10.37.1"
 // Incredibuild use entirely unrelated version-numbering schemes (e.g.
 // "10.37.0.12597" vs "3.18.0").
 private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
+
+/** Declared in plugin.xml. */
+private const val NOTIFICATION_GROUP_ID = "Incredibuild"
+
+private const val STATUS_POLL_INTERVAL_MS = 250L
 
 /** A POSIX shell variable name - see [IncredibuildRunner]'s CMake Linux environment export. */
 internal val VALID_SHELL_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
@@ -125,7 +132,7 @@ object IncredibuildRunner {
     }
 
     /** The "Incredibuild wasn't found" dialog, shared by [ensureIncredibuildReady] (Rust) and
-     * [ensureIncredibuildInstalledForCMake] - identical either way, since it's the same
+     * [ensureIncredibuildInstalled] (CMake, MSBuild) - identical either way, since it's the same
      * Incredibuild install being looked for regardless of which language triggered the build. */
     private fun showNotFoundDialog(project: Project, actionType: String) {
         PostHogClient.capture("incredibuild_not_found", mapOf("action" to actionType))
@@ -194,10 +201,7 @@ object IncredibuildRunner {
     ) {
         when (val prepared = prepareBuild(project, installFolder, cargoCommand, workingDirectory)) {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
-            is PreparedBuild.Ready -> launchBuild(project, prepared.commandLine, actionType) { exitCode ->
-                prepared.cleanUp()
-                onFinished?.invoke(exitCode)
-            }
+            is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, onFinished = onFinished)
         }
     }
 
@@ -368,22 +372,86 @@ object IncredibuildRunner {
         return PreparedBuild.Ready(commandLine) { scriptFile.delete() }
     }
 
+    /**
+     * Runs [prepared] in the Incredibuild tool window - unless another build is still running
+     * (see [run]) - and deletes its temporary scripts once it ends, or straight away if it
+     * never starts. [onFinished] is only called for a build that actually ran.
+     */
     private fun launchBuild(
         project: Project,
-        commandLine: GeneralCommandLine,
+        prepared: PreparedBuild.Ready,
         actionType: String,
-        onFinished: (exitCode: Int) -> Unit
+        presentation: AcceleratedBuildPresentation? = null,
+        onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
-        PostHogClient.capture("build_started", mapOf("action" to actionType))
-        PostHogClient.captureOnce(
-            "com.incredibuild.ibplugin.analytics.firstBuildSent",
-            "first_build",
-            mapOf("action" to actionType)
-        )
-
         ApplicationManager.getApplication().invokeLater {
-            run(project, commandLine, "Build", onFinished)
+            val processHandler = run(
+                project,
+                prepared.commandLine,
+                presentation?.contentName ?: "Build",
+                presentation?.banner
+            ) { exitCode ->
+                prepared.cleanUp()
+                onFinished?.invoke(exitCode)
+            }
+            if (processHandler == null) {
+                prepared.cleanUp()
+                return@invokeLater
+            }
+
+            PostHogClient.capture("build_started", mapOf("action" to actionType))
+            PostHogClient.captureOnce(
+                "com.incredibuild.ibplugin.analytics.firstBuildSent",
+                "first_build",
+                mapOf("action" to actionType)
+            )
+            if (presentation != null) {
+                trackInStatusBar(project, processHandler, presentation)
+            }
         }
+    }
+
+    /**
+     * Keeps a "[AcceleratedBuildPresentation.progressTitle]" progress in the status bar for as
+     * long as [processHandler] runs - the IDE's usual "something is building" signal, so an
+     * accelerated build is visible even with the Incredibuild tool window hidden - and reports
+     * the outcome as a notification once it ends. Cancelling the progress stops the build the
+     * same graceful way Stop Build does ([OSProcessHandler.destroyProcess] on our handler).
+     */
+    private fun trackInStatusBar(
+        project: Project,
+        processHandler: OSProcessHandler,
+        presentation: AcceleratedBuildPresentation
+    ) {
+        ProgressManager.getInstance().run(object : Task.Backgroundable(project, presentation.progressTitle, true) {
+            override fun run(indicator: ProgressIndicator) {
+                indicator.isIndeterminate = true
+                indicator.text = presentation.progressTitle
+                var cancelHandled = false
+                while (!processHandler.waitFor(STATUS_POLL_INTERVAL_MS)) {
+                    if (indicator.isCanceled && !cancelHandled) {
+                        cancelHandled = true
+                        processHandler.destroyProcess()
+                    }
+                    // Also reflects a stop from Stop Build or the tool window, not just this
+                    // progress's own cancel button.
+                    if (processHandler.wasStopRequested()) {
+                        indicator.text = "Stopping Incredibuild build..."
+                    }
+                }
+                val exitCode = processHandler.exitCode
+                val (content, type) = when {
+                    processHandler.wasStopRequested() -> "${presentation.contentName} was stopped." to NotificationType.INFORMATION
+                    exitCode == 0 -> "${presentation.contentName} succeeded." to NotificationType.INFORMATION
+                    else -> "${presentation.contentName} failed (exit code $exitCode). See the Incredibuild tool window for details." to
+                        NotificationType.ERROR
+                }
+                NotificationGroupManager.getInstance()
+                    .getNotificationGroup(NOTIFICATION_GROUP_ID)
+                    .createNotification("Incredibuild", content, type)
+                    .notify(project)
+            }
+        })
     }
 
     private fun showErrorOnEdt(project: Project, message: String) {
@@ -407,17 +475,27 @@ object IncredibuildRunner {
      * exit code - used both to chain a plain "cargo clean" into an Incredibuild-accelerated
      * build for Rebuild, and to report build success back to the IDE's build pipeline when
      * the build was started from there (see [IncredibuildProjectTaskRunner]).
+     *
+     * [banner], if given, is printed at the top of the console before any build output.
+     *
+     * Must be called on the EDT. Returns null, without starting anything or calling
+     * [onFinished], if another build is still running - see [confirmNoBuildRunning].
      */
     fun run(
         project: Project,
         commandLine: GeneralCommandLine,
         contentName: String,
+        banner: String? = null,
         onFinished: ((exitCode: Int) -> Unit)? = null
-    ) {
+    ): OSProcessHandler? {
+        if (!confirmNoBuildRunning(project)) return null
         val processHandler = createProcessHandler(commandLine)
 
         val console = ConsoleViewImpl(project, true)
         console.attachToProcess(processHandler)
+        if (banner != null) {
+            console.print(banner + "\n\n", ConsoleViewContentType.SYSTEM_OUTPUT)
+        }
 
         val toolWindow = requireNotNull(ToolWindowManager.getInstance(project).getToolWindow("Incredibuild")) {
             "The Incredibuild tool window is declared in plugin.xml and should always be registered."
@@ -436,6 +514,7 @@ object IncredibuildRunner {
             })
         }
         processHandler.startNotify()
+        return processHandler
     }
 
     /**
@@ -494,9 +573,14 @@ object IncredibuildRunner {
      */
     private class ColoredIncredibuildProcessHandler(
         commandLine: GeneralCommandLine
-    ) : ColoredProcessHandler(commandLine) {
+    ) : ColoredProcessHandler(commandLine), IncredibuildProcessHandler {
+
+        @Volatile
+        override var stopRequested = false
+            private set
 
         override fun destroyProcessImpl() {
+            stopRequested = true
             if (!requestGracefulStop()) super.destroyProcessImpl()
         }
     }
@@ -519,16 +603,35 @@ object IncredibuildRunner {
      */
     private class RawIncredibuildProcessHandler(
         commandLine: GeneralCommandLine
-    ) : KillableProcessHandler(commandLine) {
+    ) : KillableProcessHandler(commandLine), IncredibuildProcessHandler {
+
+        @Volatile
+        override var stopRequested = false
+            private set
 
         override fun destroyProcessImpl() {
+            stopRequested = true
             if (!requestGracefulStop()) super.destroyProcessImpl()
         }
 
         override fun killProcess() {
+            stopRequested = true
             if (!requestGracefulStop()) super.killProcess()
         }
     }
+
+    /**
+     * Implemented by both handlers above, so whoever reports a build's outcome can tell a build
+     * that was stopped from one that failed. Every stop route - Stop Build, the tool windows' own
+     * stop buttons, cancelling the status-bar progress - ends in [destroyProcessImpl] or
+     * `killProcess` on the handler, which is where it's recorded; a stopped build's exit code
+     * alone (-1, or whatever Incredibuild exits with when cancelled) looks just like a failure.
+     */
+    private interface IncredibuildProcessHandler {
+        val stopRequested: Boolean
+    }
+
+    private fun OSProcessHandler.wasStopRequested(): Boolean = (this as? IncredibuildProcessHandler)?.stopRequested == true
 
     /**
      * Asks Incredibuild to cancel the running build by build-id, returning false if there
@@ -555,6 +658,32 @@ object IncredibuildRunner {
     /** Whether a build/clean process launched through this object is currently running - used
      * by [StopBuildAction] to disable itself when there's nothing to stop. */
     fun isBuildRunning(): Boolean = activeProcessHandler?.isProcessTerminated == false
+
+    /**
+     * One build at a time: returns true if nothing is running, otherwise offers to stop the
+     * running build and returns false - the new one isn't started either way, so the two never
+     * overlap while the old one winds down. Without this, a second build replaces the first one's
+     * tool window tab (its output disappears while it's still running) and becomes the only one
+     * Stop Build can reach; and while Windows' BuildConsole would queue it behind the first
+     * ("Waiting for a build to complete..."), nothing guarantees ib_console does the same.
+     *
+     * Checked in [run], on the EDT, right where the build is registered as the active one - so
+     * two quick clicks can't both get past it. A Rebuild's chained build is unaffected: its clean
+     * has already ended by the time the build starts.
+     */
+    private fun confirmNoBuildRunning(project: Project): Boolean {
+        if (!isBuildRunning()) return true
+        val stop = Messages.showYesNoDialog(
+            project,
+            "An Incredibuild build is already running. Stop it before starting another one.",
+            "Incredibuild",
+            "Stop Running Build",
+            "Cancel",
+            Messages.getWarningIcon()
+        ) == Messages.YES
+        if (stop) stopActiveProcess(project)
+        return false
+    }
 
     /**
      * Stops whichever build/clean process is currently running, if any.
@@ -599,26 +728,71 @@ object IncredibuildRunner {
     }
 
     // -----------------------------------------------------------------------------------
-    // CMake (CLion) support - mirrors the Cargo/Rust flow above, but a cmake invocation is
-    // built from a resolved executable + argument list + environment (see
-    // com.incredibuild.ibplugin.actions.cmake.CMakeBuildCommand) rather than a single
-    // command string, and needs no custom Incredibuild profile: unlike Rust/cargo,
-    // Incredibuild's own default profile already covers C/C++ builds.
+    // Native builds - CMake (CLion) and MSBuild (Rider). Mirrors the Cargo/Rust flow above,
+    // but each invocation is built from resolved executables + argument lists + environment
+    // (see [NativeBuild]) rather than a single command string, and needs no custom
+    // Incredibuild profile: unlike Rust/cargo, Incredibuild's own default profile already
+    // covers the tools these builds launch.
     // -----------------------------------------------------------------------------------
 
     /**
      * Checks that Incredibuild is installed, showing the "not found" dialog and returning
      * null if the caller should not proceed. Unlike [ensureIncredibuildReady], this has no
      * minimum-version gate: there is no known minimum Incredibuild version required for its
-     * native CMake/C++ build support, unlike the specific version bump Rust build support
-     * needed.
+     * native CMake/C++ or MSBuild build support, unlike the specific version bump Rust build
+     * support needed.
      */
-    internal fun ensureIncredibuildInstalledForCMake(project: Project): File? {
+    internal fun ensureIncredibuildInstalled(project: Project, actionType: String): File? {
         val installFolder = IncredibuildLocator.findInstallFolder()
         if (installFolder == null) {
-            showNotFoundDialog(project, "cmake")
+            showNotFoundDialog(project, actionType)
         }
         return installFolder
+    }
+
+    /** One process to run inside an accelerated [NativeBuild]. */
+    internal class NativeCommand(val executable: String, val arguments: List<String>)
+
+    /**
+     * Everything an accelerated native build runs: [commands] in order (stopping at the first
+     * that fails), from [workingDirectory], with [environment] set on top of the inherited one.
+     * Kept as executable + argument lists rather than pre-joined strings so quoting is only ever
+     * done once, by whichever wrapper script actually launches them.
+     */
+    internal class NativeBuild(
+        val commands: List<NativeCommand>,
+        val workingDirectory: String,
+        val environment: Map<String, String> = emptyMap()
+    )
+
+    /**
+     * How an accelerated build announces itself in the IDE - so it's unmistakable that this
+     * build is going through Incredibuild rather than the IDE's own builder: [contentName] names
+     * the Incredibuild tool window tab, [banner] is printed at the top of its console, and
+     * [progressTitle] is shown in the status bar (with a cancel button that stops the build
+     * gracefully) for as long as the build runs, followed by a success/failure notification.
+     */
+    internal class AcceleratedBuildPresentation(
+        val contentName: String,
+        val banner: String,
+        val progressTitle: String
+    )
+
+    /**
+     * Runs an already-resolved [build] through Incredibuild. Must be called from a background
+     * thread with an already-verified [installFolder] (see [ensureIncredibuildInstalled]).
+     */
+    internal fun launchNativeBuild(
+        project: Project,
+        installFolder: File,
+        build: NativeBuild,
+        actionType: String,
+        presentation: AcceleratedBuildPresentation? = null
+    ) {
+        when (val prepared = prepareNativeBuild(project, installFolder, build)) {
+            is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
+            is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, presentation)
+        }
     }
 
     /**
@@ -630,7 +804,7 @@ object IncredibuildRunner {
     internal fun buildCMakeViaIncredibuild(project: Project, actionType: String, kind: CMakeBuildKind) {
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Locating Incredibuild") {
             override fun run(indicator: ProgressIndicator) {
-                val installFolder = ensureIncredibuildInstalledForCMake(project) ?: return
+                val installFolder = ensureIncredibuildInstalled(project, "cmake") ?: return
                 val resolution = deriveCMakeBuild(project, kind)
                 val resolved = when (resolution) {
                     null -> {
@@ -647,48 +821,49 @@ object IncredibuildRunner {
                     }
                     is CMakeBuildResolution.Ready -> resolution.build
                 }
-                when (val prepared = prepareCMakeBuild(project, installFolder, resolved)) {
-                    is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
-                    is PreparedBuild.Ready -> launchBuild(project, prepared.commandLine, actionType) { _ ->
-                        prepared.cleanUp()
-                    }
-                }
+                val build = NativeBuild(
+                    listOf(NativeCommand(resolved.executable, resolved.arguments)),
+                    resolved.workingDirectory,
+                    resolved.environment
+                )
+                launchNativeBuild(project, installFolder, build, actionType)
             }
         })
     }
 
-    private fun prepareCMakeBuild(
+    private fun prepareNativeBuild(
         project: Project,
         installFolder: File,
-        resolved: ResolvedCMakeBuild
+        build: NativeBuild
     ): PreparedBuild =
         if (SystemInfo.isLinux) {
-            prepareCMakeBuildLinux(project, installFolder, resolved)
+            prepareNativeBuildLinux(project, installFolder, build)
         } else {
-            prepareCMakeBuildWindows(project, installFolder, resolved)
+            prepareNativeBuildWindows(project, installFolder, build)
         }
 
     /**
      * BuildConsole needs "/command=" with a single quoted value. Rather than hand it the whole
-     * `cmake --build ... --target ...` invocation as one string - which would need its own
-     * space-containing arguments (the build directory, a target name) individually quoted
-     * *inside* that already-quoted value, an ambiguous nested-quoting shape BuildConsole's own
-     * parsing for /command= is not documented to support - this writes a tiny wrapper .cmd that
-     * runs the real invocation with ordinary single-level quoting, and points /command= at just
-     * that script's path (one simple quoted path, the same shape /profile= above already uses
-     * uncontroversially). The toolchain environment (PATH/INCLUDE/LIB for an MSVC profile, ...)
-     * is set inside the same script via `set`, so it doesn't depend on whether BuildConsole
-     * passes its own parent environment through to what it launches.
+     * `cmake --build ... --target ...` (or `MSBuild.exe <solution> ...`) invocation as one
+     * string - which would need its own space-containing arguments (the build directory, a
+     * target name, a solution path) individually quoted *inside* that already-quoted value, an
+     * ambiguous nested-quoting shape BuildConsole's own parsing for /command= is not documented
+     * to support - this writes a tiny wrapper .cmd that runs the real invocation with ordinary
+     * single-level quoting, and points /command= at just that script's path (one simple quoted
+     * path, the same shape /profile= above already uses uncontroversially). The toolchain
+     * environment (PATH/INCLUDE/LIB for an MSVC profile, ...) is set inside the same script via
+     * `set`, so it doesn't depend on whether BuildConsole passes its own parent environment
+     * through to what it launches.
      *
      * No `/profile=`/`/BuildCacheProfile=` here, unlike [prepareBuildWindows]: those point at a
-     * bespoke Incredibuild profile built specifically for Cargo/rustc, which C/C++ needs no
-     * equivalent of - Incredibuild's own default profile already covers cmake/ninja/make/nmake
-     * and the compilers they invoke.
+     * bespoke Incredibuild profile built specifically for Cargo/rustc, which C/C++ and MSBuild
+     * need no equivalent of - Incredibuild's own default profile already covers
+     * cmake/ninja/make/nmake/MSBuild and the compilers they invoke.
      */
-    private fun prepareCMakeBuildWindows(
+    private fun prepareNativeBuildWindows(
         project: Project,
         installFolder: File,
-        resolved: ResolvedCMakeBuild
+        build: NativeBuild
     ): PreparedBuild {
         val buildConsolePath = File(installFolder, "BuildConsole.exe")
         if (!buildConsolePath.exists()) {
@@ -697,18 +872,9 @@ object IncredibuildRunner {
             )
         }
 
-        val wrapperCmd = File.createTempFile("incredibuild-cmake-", ".cmd")
+        val wrapperCmd = File.createTempFile("incredibuild-native-", ".cmd")
         wrapperCmd.deleteOnExit()
-        val cmdLines = StringBuilder("@echo off\r\n")
-        for ((key, value) in resolved.environment) {
-            cmdLines.append("set \"").append(batchEscaped(key)).append('=').append(batchEscaped(value)).append("\"\r\n")
-        }
-        cmdLines.append(cmdQuoted(resolved.executable))
-        for (arg in resolved.arguments) {
-            cmdLines.append(' ').append(cmdQuoted(arg))
-        }
-        cmdLines.append("\r\nexit /b %ERRORLEVEL%\r\n")
-        wrapperCmd.writeText(cmdLines.toString())
+        wrapperCmd.writeText(windowsWrapperScript(build))
 
         val scriptFile = File.createTempFile("incredibuild-build-", ".ps1")
         scriptFile.deleteOnExit()
@@ -729,7 +895,7 @@ object IncredibuildRunner {
 
         val commandLine = GeneralCommandLine("powershell")
             .withParameters("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptFile.absolutePath)
-            .withWorkDirectory(resolved.workingDirectory)
+            .withWorkDirectory(build.workingDirectory)
 
         return PreparedBuild.Ready(commandLine) {
             scriptFile.delete()
@@ -738,16 +904,46 @@ object IncredibuildRunner {
     }
 
     /**
+     * The .cmd [prepareNativeBuildWindows] points BuildConsole's /command= at: [NativeBuild.environment]
+     * via `set`, then each command in turn, stopping at (and exiting with) the first non-zero
+     * exit code - so a multi-command build reports failure the same way a single command does.
+     */
+    internal fun windowsWrapperScript(build: NativeBuild): String {
+        val cmdLines = StringBuilder("@echo off\r\n")
+        for ((key, value) in build.environment) {
+            cmdLines.append("set \"").append(batchEscaped(key)).append('=').append(batchEscaped(value)).append("\"\r\n")
+        }
+        for ((index, command) in build.commands.withIndex()) {
+            cmdLines.append(cmdQuoted(command.executable))
+            for (arg in command.arguments) {
+                cmdLines.append(' ').append(cmdQuoted(arg))
+            }
+            cmdLines.append("\r\n")
+            if (index < build.commands.lastIndex) {
+                // Not "if errorlevel 1": that only matches codes >= 1, and a crashed process's
+                // exit code (e.g. 0xC0000005) reads as negative, which would let the chain go on.
+                cmdLines.append("if not \"%ERRORLEVEL%\"==\"0\" exit /b %ERRORLEVEL%\r\n")
+            }
+        }
+        cmdLines.append("exit /b %ERRORLEVEL%\r\n")
+        return cmdLines.toString()
+    }
+
+    /**
      * ib_console has no `/command=`-style text field - the build command is trailing argv
      * after its own recognized options - so, unlike Windows, there's no nested-quoting
-     * concern to work around here: the whole invocation (environment exports, then the cmake
+     * concern to work around here: the whole invocation (environment exports, then the build
      * command) is written into one script, each token quoted individually and safely via
      * [shellSingleQuoted].
      *
+     * ib_console runs exactly one command, so a [NativeBuild] with more than one has them
+     * chained inside a `/bin/sh -c` that ib_console runs instead -
+     * every process they start is still a descendant of ib_console, so all of it is accelerated.
+     *
      * No custom `--profile` here, unlike [prepareBuildLinux]'s RustRover-specific one: C/C++
-     * needs no equivalent, ib_console's own shipped default profile already covers it.
+     * and MSBuild need no equivalent, ib_console's own shipped default profile already covers them.
      */
-    private fun prepareCMakeBuildLinux(project: Project, installFolder: File, resolved: ResolvedCMakeBuild): PreparedBuild {
+    private fun prepareNativeBuildLinux(project: Project, installFolder: File, build: NativeBuild): PreparedBuild {
         val consolePath = File(installFolder, "bin/ib_console")
         if (!consolePath.exists()) {
             return PreparedBuild.Failed(
@@ -757,8 +953,18 @@ object IncredibuildRunner {
 
         val scriptFile = File.createTempFile("incredibuild-build-", ".sh")
         scriptFile.deleteOnExit()
+        scriptFile.writeText(linuxWrapperScript(project.name, consolePath.absolutePath, build))
+
+        val commandLine = GeneralCommandLine("/bin/sh", scriptFile.absolutePath)
+            .withWorkDirectory(build.workingDirectory)
+
+        return PreparedBuild.Ready(commandLine) { scriptFile.delete() }
+    }
+
+    /** The script [prepareNativeBuildLinux] runs - see there. */
+    internal fun linuxWrapperScript(caption: String, consolePath: String, build: NativeBuild): String {
         val script = StringBuilder("#!/bin/sh\n")
-        for ((key, value) in resolved.environment) {
+        for ((key, value) in build.environment) {
             // Not every entry CPPBuildUtil.buildCommandLine hands back is necessarily a valid
             // shell identifier (e.g. an inherited "BASH_FUNC_foo%%" from an exported bash
             // function) - "export" on such a name fails and takes the whole script down with
@@ -767,29 +973,43 @@ object IncredibuildRunner {
             if (!VALID_SHELL_IDENTIFIER.matches(key)) continue
             script.append("export ").append(key).append('=').append(shellSingleQuoted(value)).append('\n')
         }
-        script.append("exec ").append(shellSingleQuoted(consolePath.absolutePath))
-            .append(" --caption ").append(shellSingleQuoted(project.name))
+        script.append("exec ").append(shellSingleQuoted(consolePath))
+            .append(" --caption ").append(shellSingleQuoted(caption))
             .append(" --ib-quiet --build-cache-local-shared --build-cache-basedir=\"\$PWD\" -- ")
-            .append(shellSingleQuoted(resolved.executable))
-        for (arg in resolved.arguments) {
-            script.append(' ').append(shellSingleQuoted(arg))
+        val commandTexts = build.commands.map { command ->
+            (listOf(command.executable) + command.arguments).joinToString(" ") { shellSingleQuoted(it) }
+        }
+        if (commandTexts.size == 1) {
+            script.append(commandTexts.single())
+        } else {
+            script.append("/bin/sh -c ").append(shellSingleQuoted(commandTexts.joinToString(" && ")))
         }
         // Merges stderr into stdout, for the same reason prepareBuildLinux's Cargo build does.
         script.append(" 2>&1\n")
-        scriptFile.writeText(script.toString())
-
-        val commandLine = GeneralCommandLine("/bin/sh", scriptFile.absolutePath)
-            .withWorkDirectory(resolved.workingDirectory)
-
-        return PreparedBuild.Ready(commandLine) { scriptFile.delete() }
+        return script.toString()
     }
 
-    /** Wraps [value] as a cmd.exe double-quoted token (after [batchEscaped]), needed only when
-     * it contains whitespace. */
+    /**
+     * Wraps [value] as a cmd.exe double-quoted token (after [batchEscaped]), needed only when it
+     * is empty, contains whitespace, or contains a character cmd.exe would otherwise treat as an
+     * operator (`&`, `|`, `<`, `>`, `^`, `(`, `)` - e.g. a solution under `C:\R&D\`).
+     *
+     * Inside the quotes, the receiving program (MSBuild, cmake, ... - anything parsing its
+     * command line the MSVC runtime / CommandLineToArgvW way) treats backslashes right before a
+     * `"` as escapes, so a value ending in backslashes - `-p:SolutionDir=C:\My Projects\App\` -
+     * would otherwise turn the closing quote into a literal one and swallow every argument after
+     * it. Doubling those trailing backslashes is that same parser's escape for them.
+     */
     internal fun cmdQuoted(value: String): String {
         val escaped = batchEscaped(value)
-        return if (escaped.any { it.isWhitespace() }) "\"$escaped\"" else escaped
+        if (escaped.isNotEmpty() && escaped.none { it.isWhitespace() || it in CMD_SPECIAL_CHARACTERS }) {
+            return escaped
+        }
+        val trailingBackslashes = escaped.length - escaped.trimEnd('\\').length
+        return "\"" + escaped + "\\".repeat(trailingBackslashes) + "\""
     }
+
+    private const val CMD_SPECIAL_CHARACTERS = "&|<>^()"
 
     /** Escapes [value] for literal use in a .cmd file: cmd.exe expands `%...%` variable
      * references anywhere on a line it parses - including inside a `set "KEY=VALUE"` value and

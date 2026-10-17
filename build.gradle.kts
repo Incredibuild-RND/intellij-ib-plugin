@@ -52,6 +52,9 @@ dependencies {
         // Verifier against a plain 2026.2 target (only 262.8665+ builds have it).
         plugin("com.intellij.nativeDebug", "262.8665.176")
         bundledPlugin("intellij.testRunner.plugin")
+        // The Rider-only .NET adapter (see rider/build.gradle.kts), merged into this plugin's
+        // own jar rather than shipped as a separate one - still a single plugin to install.
+        pluginComposedModule(implementation(project(":rider")))
         testFramework(TestFrameworkType.Platform)
     }
 }
@@ -118,6 +121,12 @@ intellijPlatform {
         ides {
             create(IntelliJPlatformType.CLion, "2026.2")
             create(IntelliJPlatformType.RustRover, "2026.2")
+            // The only IDE that ever loads the .NET half (rider-support.xml).
+            // Rider is only published as a Maven artifact, not a regular installer - see
+            // https://github.com/JetBrains/intellij-platform-gradle-plugin/issues/1852.
+            create(IntelliJPlatformType.Rider, "2026.2") {
+                useInstaller = false
+            }
         }
     }
 }
@@ -132,12 +141,21 @@ intellijPlatformTesting {
             type = IntelliJPlatformType.CLion
             version = "2026.2"
         }
+        // Likewise for the .NET/Rider actions (rider-support.xml).
+        register("runIdeForRider") {
+            type = IntelliJPlatformType.Rider
+            version = "2026.2"
+            useInstaller = false
+        }
     }
 }
 
 // buildSearchableOptions launches a sandboxed IDE to index Settings UI labels for search.
 // That launcher doesn't support ARM64 hosts ("Unsupported JVM architecture: aarch64") - it's a
 // build-time search-indexing convenience only, not required for the plugin to function.
-tasks.named("buildSearchableOptions") {
-    enabled = false
+// Switched off through the plugin's own flag rather than by disabling just that one task: the
+// follow-up prepareJarSearchableOptions task still expects the output folder buildSearchableOptions
+// would have created, so after a `clean` the task-only approach fails the build.
+intellijPlatform {
+    buildSearchableOptions = false
 }
