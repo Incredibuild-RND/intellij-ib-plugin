@@ -201,10 +201,7 @@ object IncredibuildRunner {
     ) {
         when (val prepared = prepareBuild(project, installFolder, cargoCommand, workingDirectory)) {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
-            is PreparedBuild.Ready -> launchBuild(project, prepared.commandLine, actionType) { exitCode ->
-                prepared.cleanUp()
-                onFinished?.invoke(exitCode)
-            }
+            is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, onFinished = onFinished)
         }
     }
 
@@ -375,27 +372,38 @@ object IncredibuildRunner {
         return PreparedBuild.Ready(commandLine) { scriptFile.delete() }
     }
 
+    /**
+     * Runs [prepared] in the Incredibuild tool window - unless another build is still running
+     * (see [run]) - and deletes its temporary scripts once it ends, or straight away if it
+     * never starts. [onFinished] is only called for a build that actually ran.
+     */
     private fun launchBuild(
         project: Project,
-        commandLine: GeneralCommandLine,
+        prepared: PreparedBuild.Ready,
         actionType: String,
         presentation: AcceleratedBuildPresentation? = null,
-        onFinished: (exitCode: Int) -> Unit
+        onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
-        PostHogClient.capture("build_started", mapOf("action" to actionType))
-        PostHogClient.captureOnce(
-            "com.incredibuild.ibplugin.analytics.firstBuildSent",
-            "first_build",
-            mapOf("action" to actionType)
-        )
-
         ApplicationManager.getApplication().invokeLater {
             val processHandler = run(
                 project,
-                commandLine,
+                prepared.commandLine,
                 presentation?.contentName ?: "Build",
-                presentation?.banner,
-                onFinished
+                presentation?.banner
+            ) { exitCode ->
+                prepared.cleanUp()
+                onFinished?.invoke(exitCode)
+            }
+            if (processHandler == null) {
+                prepared.cleanUp()
+                return@invokeLater
+            }
+
+            PostHogClient.capture("build_started", mapOf("action" to actionType))
+            PostHogClient.captureOnce(
+                "com.incredibuild.ibplugin.analytics.firstBuildSent",
+                "first_build",
+                mapOf("action" to actionType)
             )
             if (presentation != null) {
                 trackInStatusBar(project, processHandler, presentation)
@@ -419,17 +427,21 @@ object IncredibuildRunner {
             override fun run(indicator: ProgressIndicator) {
                 indicator.isIndeterminate = true
                 indicator.text = presentation.progressTitle
-                var stopRequested = false
+                var cancelHandled = false
                 while (!processHandler.waitFor(STATUS_POLL_INTERVAL_MS)) {
-                    if (indicator.isCanceled && !stopRequested) {
-                        stopRequested = true
-                        indicator.text = "Stopping Incredibuild build..."
+                    if (indicator.isCanceled && !cancelHandled) {
+                        cancelHandled = true
                         processHandler.destroyProcess()
+                    }
+                    // Also reflects a stop from Stop Build or the tool window, not just this
+                    // progress's own cancel button.
+                    if (processHandler.wasStopRequested()) {
+                        indicator.text = "Stopping Incredibuild build..."
                     }
                 }
                 val exitCode = processHandler.exitCode
                 val (content, type) = when {
-                    stopRequested -> "${presentation.contentName} was stopped." to NotificationType.INFORMATION
+                    processHandler.wasStopRequested() -> "${presentation.contentName} was stopped." to NotificationType.INFORMATION
                     exitCode == 0 -> "${presentation.contentName} succeeded." to NotificationType.INFORMATION
                     else -> "${presentation.contentName} failed (exit code $exitCode). See the Incredibuild tool window for details." to
                         NotificationType.ERROR
@@ -465,6 +477,9 @@ object IncredibuildRunner {
      * the build was started from there (see [IncredibuildProjectTaskRunner]).
      *
      * [banner], if given, is printed at the top of the console before any build output.
+     *
+     * Must be called on the EDT. Returns null, without starting anything or calling
+     * [onFinished], if another build is still running - see [confirmNoBuildRunning].
      */
     fun run(
         project: Project,
@@ -472,7 +487,8 @@ object IncredibuildRunner {
         contentName: String,
         banner: String? = null,
         onFinished: ((exitCode: Int) -> Unit)? = null
-    ): OSProcessHandler {
+    ): OSProcessHandler? {
+        if (!confirmNoBuildRunning(project)) return null
         val processHandler = createProcessHandler(commandLine)
 
         val console = ConsoleViewImpl(project, true)
@@ -557,9 +573,14 @@ object IncredibuildRunner {
      */
     private class ColoredIncredibuildProcessHandler(
         commandLine: GeneralCommandLine
-    ) : ColoredProcessHandler(commandLine) {
+    ) : ColoredProcessHandler(commandLine), IncredibuildProcessHandler {
+
+        @Volatile
+        override var stopRequested = false
+            private set
 
         override fun destroyProcessImpl() {
+            stopRequested = true
             if (!requestGracefulStop()) super.destroyProcessImpl()
         }
     }
@@ -582,16 +603,35 @@ object IncredibuildRunner {
      */
     private class RawIncredibuildProcessHandler(
         commandLine: GeneralCommandLine
-    ) : KillableProcessHandler(commandLine) {
+    ) : KillableProcessHandler(commandLine), IncredibuildProcessHandler {
+
+        @Volatile
+        override var stopRequested = false
+            private set
 
         override fun destroyProcessImpl() {
+            stopRequested = true
             if (!requestGracefulStop()) super.destroyProcessImpl()
         }
 
         override fun killProcess() {
+            stopRequested = true
             if (!requestGracefulStop()) super.killProcess()
         }
     }
+
+    /**
+     * Implemented by both handlers above, so whoever reports a build's outcome can tell a build
+     * that was stopped from one that failed. Every stop route - Stop Build, the tool windows' own
+     * stop buttons, cancelling the status-bar progress - ends in [destroyProcessImpl] or
+     * `killProcess` on the handler, which is where it's recorded; a stopped build's exit code
+     * alone (-1, or whatever Incredibuild exits with when cancelled) looks just like a failure.
+     */
+    private interface IncredibuildProcessHandler {
+        val stopRequested: Boolean
+    }
+
+    private fun OSProcessHandler.wasStopRequested(): Boolean = (this as? IncredibuildProcessHandler)?.stopRequested == true
 
     /**
      * Asks Incredibuild to cancel the running build by build-id, returning false if there
@@ -618,6 +658,32 @@ object IncredibuildRunner {
     /** Whether a build/clean process launched through this object is currently running - used
      * by [StopBuildAction] to disable itself when there's nothing to stop. */
     fun isBuildRunning(): Boolean = activeProcessHandler?.isProcessTerminated == false
+
+    /**
+     * One build at a time: returns true if nothing is running, otherwise offers to stop the
+     * running build and returns false - the new one isn't started either way, so the two never
+     * overlap while the old one winds down. Without this, a second build replaces the first one's
+     * tool window tab (its output disappears while it's still running) and becomes the only one
+     * Stop Build can reach; and while Windows' BuildConsole would queue it behind the first
+     * ("Waiting for a build to complete..."), nothing guarantees ib_console does the same.
+     *
+     * Checked in [run], on the EDT, right where the build is registered as the active one - so
+     * two quick clicks can't both get past it. A Rebuild's chained build is unaffected: its clean
+     * has already ended by the time the build starts.
+     */
+    private fun confirmNoBuildRunning(project: Project): Boolean {
+        if (!isBuildRunning()) return true
+        val stop = Messages.showYesNoDialog(
+            project,
+            "An Incredibuild build is already running. Stop it before starting another one.",
+            "Incredibuild",
+            "Stop Running Build",
+            "Cancel",
+            Messages.getWarningIcon()
+        ) == Messages.YES
+        if (stop) stopActiveProcess(project)
+        return false
+    }
 
     /**
      * Stops whichever build/clean process is currently running, if any.
@@ -725,9 +791,7 @@ object IncredibuildRunner {
     ) {
         when (val prepared = prepareNativeBuild(project, installFolder, build)) {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
-            is PreparedBuild.Ready -> launchBuild(project, prepared.commandLine, actionType, presentation) { _ ->
-                prepared.cleanUp()
-            }
+            is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, presentation)
         }
     }
 
@@ -856,7 +920,9 @@ object IncredibuildRunner {
             }
             cmdLines.append("\r\n")
             if (index < build.commands.lastIndex) {
-                cmdLines.append("if errorlevel 1 exit /b %ERRORLEVEL%\r\n")
+                // Not "if errorlevel 1": that only matches codes >= 1, and a crashed process's
+                // exit code (e.g. 0xC0000005) reads as negative, which would let the chain go on.
+                cmdLines.append("if not \"%ERRORLEVEL%\"==\"0\" exit /b %ERRORLEVEL%\r\n")
             }
         }
         cmdLines.append("exit /b %ERRORLEVEL%\r\n")

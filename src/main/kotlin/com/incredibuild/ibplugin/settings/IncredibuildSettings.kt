@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.settings
 
+import com.incredibuild.ibplugin.actions.dotnet.MsBuildLocator
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
@@ -66,7 +67,13 @@ class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State
     var msBuildPath: String
         get() = state.msBuildPath
         set(value) {
-            state.msBuildPath = value.trim()
+            val trimmed = value.trim()
+            if (trimmed != state.msBuildPath) {
+                // Any change - including clearing it back to auto-detect - re-detects on the next
+                // build, which also picks up an MSBuild installed since the last detection.
+                MsBuildLocator.clearCache()
+            }
+            state.msBuildPath = trimmed
         }
 
     companion object {

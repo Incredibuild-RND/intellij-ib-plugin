@@ -251,7 +251,7 @@ class MsBuildCommandTest {
         assertEquals(
             "@echo off\r\n" +
                 "msbuild \"a b.csproj\"\r\n" +
-                "if errorlevel 1 exit /b %ERRORLEVEL%\r\n" +
+                "if not \"%ERRORLEVEL%\"==\"0\" exit /b %ERRORLEVEL%\r\n" +
                 "msbuild c.csproj\r\n" +
                 "exit /b %ERRORLEVEL%\r\n",
             IncredibuildRunner.windowsWrapperScript(build)

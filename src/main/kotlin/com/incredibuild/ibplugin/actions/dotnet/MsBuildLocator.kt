@@ -64,6 +64,20 @@ internal sealed interface MsBuildLocation {
  */
 internal object MsBuildLocator {
 
+    /**
+     * What [detect] last found, so a build doesn't pay for vswhere (up to [VSWHERE_TIMEOUT_MS])
+     * every time. Kept for the session, but dropped by [clearCache] when the MSBuild setting
+     * changes, and re-detected if the executable has since disappeared (e.g. Visual Studio was
+     * uninstalled). "Not found" is never cached, so installing MSBuild takes effect on the next
+     * build without restarting the IDE.
+     */
+    @Volatile
+    private var detected: MsBuildTool? = null
+
+    fun clearCache() {
+        detected = null
+    }
+
     fun locate(): MsBuildLocation {
         val configured = IncredibuildSettings.getInstance().msBuildPath
         if (configured.isNotBlank()) {
@@ -76,6 +90,11 @@ internal object MsBuildLocator {
             }
         }
 
+        detected?.takeIf { File(it.executable).isFile }?.let { return MsBuildLocation.Found(it) }
+        return detect().also { if (it is MsBuildLocation.Found) detected = it.tool }
+    }
+
+    private fun detect(): MsBuildLocation {
         if (SystemInfo.isWindows) {
             findVisualStudioMsBuild(MSBUILD_COMPONENT, DOTNET_SDK_COMPONENT)
                 ?.let { return MsBuildLocation.Found(MsBuildTool(it, emptyList(), it)) }

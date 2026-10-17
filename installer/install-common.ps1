@@ -4,10 +4,11 @@
 # install.ps1) via installer/build-installer.ps1 - edit this ONE file rather
 # than both generated scripts.
 
-# RR = RustRover, IU = IntelliJ IDEA Ultimate, RD = Rider (the .NET actions -
-# see rider-support.xml). Community editions (IC) don't carry
+# RR = RustRover, IU = IntelliJ IDEA Ultimate, CL = CLion (the CMake actions -
+# see cmake-support.xml), RD = Rider (the .NET actions - see
+# rider-support.xml). Community editions (IC) don't carry
 # com.intellij.modules.ultimate, which the Rust plugin requires there.
-$targetProductCodes = @("RR", "IU", "RD")
+$targetProductCodes = @("RR", "IU", "CL", "RD")
 
 # Installs can land in quite a few places, so several roots are searched
 # recursively rather than assuming one fixed layout:
@@ -31,7 +32,7 @@ $registryInstallLocations = @(
 } | ForEach-Object {
     Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
 } | Where-Object {
-    $_.DisplayName -match "RustRover|IntelliJ IDEA|Rider" -and $_.InstallLocation
+    $_.DisplayName -match "RustRover|IntelliJ IDEA|CLion|Rider" -and $_.InstallLocation
 } | ForEach-Object { $_.InstallLocation } | Select-Object -Unique
 
 $searchRoots = @(
@@ -81,7 +82,7 @@ function Stop-InstallerTranscriptIfRunning {
 
 if (-not $installs) {
     $searched = ($searchRoots | Select-Object -Unique) -join "; "
-    $message = "No supported JetBrains IDE (RustRover, IntelliJ IDEA Ultimate or Rider) found. Searched: $searched."
+    $message = "No supported JetBrains IDE (RustRover, IntelliJ IDEA Ultimate, CLion or Rider) found. Searched: $searched."
     if ($allProducts) {
         $found = ($allProducts | ForEach-Object { "$($_.ProductName) [$($_.ProductCode)] at $($_.InfoPath)" }) -join "; "
         $message += " Found (but not supported by this plugin): $found."
