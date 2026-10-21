@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.1.0]
+
 ### Added
 
 - CLion support for CMake projects: **Build**, **Rebuild** and **Build All** in the **Incredibuild** menu run
@@ -17,6 +19,28 @@
 - **Settings/Preferences > Tools > Incredibuild** can set the MSBuild that Rider builds use, when the automatically
   detected one isn't the right one.
 - The installers now also install the plugin into CLion and Rider.
+- **Use Incredibuild for the IDE's own Build and Rebuild actions** now works in CLion and Rider too, not only in
+  RustRover. In CLion it covers **Build**, **Rebuild**, **Build Project** and the build that runs before a CMake run
+  configuration starts. In Rider it covers **Build Solution**, **Rebuild Solution**, **Build Selection** and the
+  **Build Project**/**Build Solution** before-run steps. In both IDEs that includes the toolbar build button and
+  keyboard shortcuts. Off by default, and the **Incredibuild** menu actions are available either way.
+- **Settings/Preferences > Tools > Incredibuild** shows the Incredibuild installation the plugin uses (folder, version
+  and, on Windows, whether this machine is licensed), with a **Re-check** button.
+
+### Changed
+
+- When IDE build acceleration is on but Incredibuild is not installed, not licensed or too old, the build now runs
+  with the IDE's own builder and a notification explains why, with links to the settings and the download page.
+  Previously RustRover fell back silently. The notification is shown once per project session for each problem.
+- Only one Incredibuild build runs at a time, in every IDE. Starting a build - from the **Incredibuild** menu or,
+  with IDE build acceleration on, from the IDE's own build actions - while another is still running offers to stop
+  the running one, then starts the new build as soon as it has stopped. Previously a second build started alongside
+  the first, replacing its output in the **Incredibuild** tool window.
+- Renamed the setting **Accelerate the IDE's own build actions** to **Use Incredibuild for the IDE's own Build and
+  Rebuild actions**. The saved value is kept.
+- The Windows installers (`install-intellij-ib-plugin.ps1` and `intellij-ib-plugin.exe`) are now attached to each
+  GitHub release, built by the release workflow from the published plugin, instead of the script being committed to
+  the repository.
 
 ## [1.0.3]
 

@@ -3,6 +3,23 @@
      Rider's solution model through the Rider-only adapter module (rider/, merged into this
      plugin's jar), then run MSBuild through Incredibuild - see actions/dotnet/. -->
 <idea-plugin>
+    <!-- "Use Incredibuild for the IDE's own Build and Rebuild actions" (Settings > Tools >
+         Incredibuild). Rider has no build-interception extension point, so this takes the two
+         routes in: its build actions are wrapped by id (DotNetIdeBuildActionInstaller), and its
+         before-run build steps are shadowed by providers registered under the same keys -
+         order="first" so the platform runs them, delegating everything else back to Rider's own
+         (see IncredibuildBeforeRunTaskProvider). Both fall back to Rider's build when the setting
+         is off or Incredibuild can't take the build. -->
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="com.incredibuild.ibplugin.actions.dotnet.DotNetIdeBuildActionInstaller"/>
+        <stepsBeforeRunProvider order="first"
+                                implementation="com.incredibuild.ibplugin.rider.IncredibuildBuildProjectBeforeRunTaskProvider"/>
+        <stepsBeforeRunProvider order="first"
+                                implementation="com.incredibuild.ibplugin.rider.IncredibuildBuildSolutionBeforeRunTaskProvider"/>
+        <applicationService serviceInterface="com.incredibuild.ibplugin.rider.RiderBuildInterceptor"
+                            serviceImplementation="com.incredibuild.ibplugin.actions.dotnet.DotNetIdeBuildInterceptor"/>
+    </extensions>
+
     <actions>
         <!-- Full "... with Incredibuild" names, unlike the Rust/CMake halves' plain
              "Build"/"Rebuild": these also sit in Rider's own Build menu and Solution Explorer

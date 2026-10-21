@@ -21,6 +21,7 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.DumbAware
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 
 /**
@@ -45,31 +46,22 @@ abstract class DotNetBuildWithIncredibuildActionBase internal constructor(
             return
         }
 
-        val selection = RiderSolutionModel.selection(e.dataContext)
+        // The selection is only read where it matters - the context menu, and Build Selected
+        // Projects - since this runs on every menu and toolbar update.
         if (e.isFromContextMenu) {
             // Same rule as Rider's own Build Selection: offered on the solution, solution
             // folders and projects in the Solution Explorer, not on files/references inside them.
-            e.presentation.isEnabledAndVisible = selection != SolutionSelection.Nothing
+            e.presentation.isEnabledAndVisible = RiderSolutionModel.selection(e.dataContext) != SolutionSelection.Nothing
             return
         }
 
         e.presentation.isVisible = true
-        e.presentation.isEnabled = kind != DotNetBuildKind.BUILD_PROJECTS || selection != SolutionSelection.Nothing
+        e.presentation.isEnabled = kind != DotNetBuildKind.BUILD_PROJECTS ||
+            RiderSolutionModel.selection(e.dataContext) != SolutionSelection.Nothing
     }
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val entryPoint = RiderSolutionModel.buildEntryPoint(project)
-        val solutionFile = RiderSolutionModel.solutionFile(project)
-        val configuration = RiderSolutionModel.activeConfiguration(project)
-        if (entryPoint == null || solutionFile == null || configuration == null) {
-            Messages.showErrorDialog(
-                project,
-                "Could not determine what to build. Is a solution loaded, with an active configuration selected?",
-                "Incredibuild"
-            )
-            return
-        }
 
         var effectiveKind = kind
         var projectFiles = emptyList<String>()
@@ -90,19 +82,33 @@ abstract class DotNetBuildWithIncredibuildActionBase internal constructor(
             }
         }
 
-        DotNetBuildRunner.build(
-            project,
-            DotNetBuildRequest(
-                effectiveKind,
-                entryPoint,
-                solutionFile,
-                configuration.configuration,
-                configuration.platform,
-                projectFiles
-            ),
-            actionType
-        )
+        val request = dotNetBuildRequest(project, effectiveKind, projectFiles)
+        if (request == null) {
+            Messages.showErrorDialog(
+                project,
+                "Could not determine what to build. Is a solution loaded, with an active configuration selected?",
+                "Incredibuild"
+            )
+            return
+        }
+        DotNetBuildRunner.build(project, request, actionType)
     }
+}
+
+/**
+ * What Rider's own build of [kind] would build right now - the open solution (or solution filter)
+ * in its active configuration|platform - or null if there is no solution or active configuration.
+ * Reads Rider's solution model, so call it on the EDT.
+ */
+internal fun dotNetBuildRequest(
+    project: Project,
+    kind: DotNetBuildKind,
+    projectFiles: List<String> = emptyList()
+): DotNetBuildRequest? {
+    val entryPoint = RiderSolutionModel.buildEntryPoint(project) ?: return null
+    val solutionFile = RiderSolutionModel.solutionFile(project) ?: return null
+    val configuration = RiderSolutionModel.activeConfiguration(project) ?: return null
+    return DotNetBuildRequest(kind, entryPoint, solutionFile, configuration.configuration, configuration.platform, projectFiles)
 }
 
 /** The accelerated equivalent of Rider's own Build Solution. */

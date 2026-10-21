@@ -243,6 +243,44 @@ class MsBuildCommandTest {
     }
 
     @Test
+    fun `solutionFilterProjectFiles lists only the filter's projects, relative to the solution`() {
+        // The filter in a subfolder of the solution, as Rider allows: its solution path is relative
+        // to the filter, its projects to the solution - which is how MSBuild resolves them.
+        val filterDir = File(solutionDir, "filters")
+        val slnf = """
+            {
+              "solution": {
+                "path": "..\\Sln.sln",
+                "projects": [
+                  "src\\App\\App.csproj"
+                ]
+              }
+            }
+        """.trimIndent()
+        assertEquals(listOf(appProject), solutionFilterProjectFiles(slnf, filterDir))
+    }
+
+    @Test
+    fun `solutionFilterProjectFiles accepts forward slashes`() {
+        val slnf = """{"solution": {"path": "Sln.sln", "projects": ["src/App/App.csproj", "Lib/Lib.csproj"]}}"""
+        assertEquals(listOf(appProject, libProject), solutionFilterProjectFiles(slnf, solutionDir))
+    }
+
+    @Test
+    fun `a filter excluding the only unrestored project doesn't need restore`() = withTempDir { root ->
+        // App is restored, Unrestored never was; a filter with only App mustn't ask for -restore,
+        // though the whole solution would.
+        val sdkProject = """<Project Sdk="Microsoft.NET.Sdk"></Project>"""
+        val app = File(root, "App/App.csproj").apply { parentFile.mkdirs(); writeText(sdkProject) }
+        File(root, "App/obj/project.assets.json").apply { parentFile.mkdirs(); writeText("{}") }
+        val unrestored = File(root, "Unrestored/Unrestored.csproj").apply { parentFile.mkdirs(); writeText(sdkProject) }
+        val slnf = """{"solution": {"path": "Sln.sln", "projects": ["App\\App.csproj"]}}"""
+
+        assertFalse(needsRestore(solutionFilterProjectFiles(slnf, root)))
+        assertTrue(needsRestore(listOf(app.path, unrestored.path)))
+    }
+
+    @Test
     fun `windows wrapper stops at the first failing command`() {
         val build = NativeBuild(
             listOf(NativeCommand("msbuild", listOf("a b.csproj")), NativeCommand("msbuild", listOf("c.csproj"))),
@@ -281,6 +319,48 @@ class MsBuildCommandTest {
                     "'\\''dotnet'\\'' '\\''msbuild'\\'' '\\''b.csproj'\\''' 2>&1\n"
             )
         )
+    }
+
+    @Test
+    fun `banner project list is capped for large selections`() {
+        assertEquals("App", DotNetBuildRunner.cappedProjectList(listOf("App")))
+        // Three still fit: "+1 more" would be no shorter than the name it hides.
+        assertEquals("App, Lib, Tests", DotNetBuildRunner.cappedProjectList(listOf("App", "Lib", "Tests")))
+        assertEquals(
+            "P0, P1 +12 more",
+            DotNetBuildRunner.cappedProjectList((0 until 14).map { "P$it" })
+        )
+    }
+
+    @Test
+    fun `msbuild builds leave Build Cache off`() {
+        val tool = MsBuildTool("msbuild", emptyList(), "MSBuild")
+        assertFalse(solutionBuild(tool, "Sln.sln", DotNetBuildKind.BUILD_SOLUTION, "Debug", "Any CPU").buildCache)
+        assertFalse(
+            projectsBuild(tool, "Sln.sln", listOf(appProject), "Debug", "Any CPU", mapOf(normalizedPath(appProject) to "src\\App"))
+                .buildCache
+        )
+    }
+
+    @Test
+    fun `linux wrapper passes the build cache options only when the build wants them`() {
+        val command = listOf(NativeCommand("cmake", listOf("--build", "out")))
+        val cached = IncredibuildRunner.linuxWrapperScript("P", "/ib", NativeBuild(command, "."))
+        val uncached = IncredibuildRunner.linuxWrapperScript("P", "/ib", NativeBuild(command, ".", buildCache = false))
+        assertTrue(cached, cached.contains(" --ib-quiet --build-cache-local-shared --build-cache-basedir=\"\$PWD\" -- "))
+        assertTrue(uncached, uncached.contains(" --ib-quiet -- "))
+        assertFalse(uncached, uncached.contains("build-cache"))
+    }
+
+    @Test
+    fun `windows launcher passes BUILDCACHELOCAL only when the build wants it`() {
+        val cached = IncredibuildRunner.windowsLauncherScript("BuildConsole.exe", "w.cmd", "P", buildCache = true)
+        val uncached = IncredibuildRunner.windowsLauncherScript("BuildConsole.exe", "w.cmd", "P", buildCache = false)
+        assertEquals(
+            "& \"BuildConsole.exe\" '/command=\"w.cmd\"' '/title=\"P\"' /BUILDCACHELOCAL=ON\nexit \$LASTEXITCODE\n",
+            cached
+        )
+        assertEquals("& \"BuildConsole.exe\" '/command=\"w.cmd\"' '/title=\"P\"'\nexit \$LASTEXITCODE\n", uncached)
     }
 
     @Test

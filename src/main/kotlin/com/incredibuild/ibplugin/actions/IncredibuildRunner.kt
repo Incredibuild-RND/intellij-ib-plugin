@@ -31,6 +31,7 @@ import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.util.ExecUtil
 import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
@@ -41,6 +42,7 @@ import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.wm.ToolWindowManager
 import com.incredibuild.ibplugin.analytics.PostHogClient
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Matches the "Build ID: {<guid>}" line BuildConsole prints to stdout when a build starts.
  * Windows only - ib_console on Linux never prints a build-id, so this simply never matches
@@ -48,22 +50,13 @@ import java.io.File
 private val BUILD_ID_REGEX = Regex("""Build ID:\s*\{([0-9A-Fa-f-]+)}""")
 
 // Used for both Windows and Linux - same landing page for both.
-private const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrations/jetbrains-ides"
+internal const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrations/jetbrains-ides"
 
-private const val INCREDIBUILD_DOWNLOAD_PAGE =
+internal const val INCREDIBUILD_DOWNLOAD_PAGE =
     "https://docs.incredibuild.com/site-landing/download-docs-center"
 
-private const val MINIMUM_RUST_BUILD_VERSION = "10.37.1"
-
-// The Linux team found an issue with an earlier released Linux Incredibuild
-// version during RustRover integration testing, hence this gate. Deliberately a
-// separate constant, not shared with the Windows one: Windows and Linux
-// Incredibuild use entirely unrelated version-numbering schemes (e.g.
-// "10.37.0.12597" vs "3.18.0").
-private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
-
 /** Declared in plugin.xml. */
-private const val NOTIFICATION_GROUP_ID = "Incredibuild"
+internal const val NOTIFICATION_GROUP_ID = "Incredibuild"
 
 private const val STATUS_POLL_INTERVAL_MS = 250L
 
@@ -101,7 +94,7 @@ object IncredibuildRunner {
             return null
         }
 
-        val minimumVersion = if (SystemInfo.isLinux) MINIMUM_RUST_BUILD_VERSION_LINUX else MINIMUM_RUST_BUILD_VERSION
+        val minimumVersion = requireNotNull(BuildFlavor.RUST.minimumVersion())
         val installedVersion = IncredibuildLocator.findVersion()
         if (installedVersion != null &&
             IncredibuildLocator.compareVersions(installedVersion, minimumVersion) < 0
@@ -385,28 +378,26 @@ object IncredibuildRunner {
         onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
         ApplicationManager.getApplication().invokeLater {
-            val processHandler = run(
+            run(
                 project,
                 prepared.commandLine,
                 presentation?.contentName ?: "Build",
-                presentation?.banner
+                presentation?.banner,
+                onNotStarted = prepared.cleanUp,
+                onStarted = { processHandler ->
+                    PostHogClient.capture("build_started", mapOf("action" to actionType))
+                    PostHogClient.captureOnce(
+                        "com.incredibuild.ibplugin.analytics.firstBuildSent",
+                        "first_build",
+                        mapOf("action" to actionType)
+                    )
+                    if (presentation != null) {
+                        trackInStatusBar(project, processHandler, presentation)
+                    }
+                }
             ) { exitCode ->
                 prepared.cleanUp()
                 onFinished?.invoke(exitCode)
-            }
-            if (processHandler == null) {
-                prepared.cleanUp()
-                return@invokeLater
-            }
-
-            PostHogClient.capture("build_started", mapOf("action" to actionType))
-            PostHogClient.captureOnce(
-                "com.incredibuild.ibplugin.analytics.firstBuildSent",
-                "first_build",
-                mapOf("action" to actionType)
-            )
-            if (presentation != null) {
-                trackInStatusBar(project, processHandler, presentation)
             }
         }
     }
@@ -478,17 +469,32 @@ object IncredibuildRunner {
      *
      * [banner], if given, is printed at the top of the console before any build output.
      *
-     * Must be called on the EDT. Returns null, without starting anything or calling
-     * [onFinished], if another build is still running - see [confirmNoBuildRunning].
+     * Must be called on the EDT. Only one build runs at a time (see [whenNoBuildRunning]), so
+     * this may start the process later - once a running build the user chose to stop has
+     * stopped - or not at all: [onStarted] gets the running process, [onNotStarted] is called
+     * instead (and [onFinished] never is) if the user cancels.
      */
     fun run(
         project: Project,
         commandLine: GeneralCommandLine,
         contentName: String,
         banner: String? = null,
+        onNotStarted: () -> Unit = {},
+        onStarted: (OSProcessHandler) -> Unit = {},
         onFinished: ((exitCode: Int) -> Unit)? = null
-    ): OSProcessHandler? {
-        if (!confirmNoBuildRunning(project)) return null
+    ) {
+        whenNoBuildRunning(project, onNotStarted) {
+            onStarted(start(project, commandLine, contentName, banner, onFinished))
+        }
+    }
+
+    private fun start(
+        project: Project,
+        commandLine: GeneralCommandLine,
+        contentName: String,
+        banner: String?,
+        onFinished: ((exitCode: Int) -> Unit)?
+    ): OSProcessHandler {
         val processHandler = createProcessHandler(commandLine)
 
         val console = ConsoleViewImpl(project, true)
@@ -660,30 +666,72 @@ object IncredibuildRunner {
     fun isBuildRunning(): Boolean = activeProcessHandler?.isProcessTerminated == false
 
     /**
-     * One build at a time: returns true if nothing is running, otherwise offers to stop the
-     * running build and returns false - the new one isn't started either way, so the two never
-     * overlap while the old one winds down. Without this, a second build replaces the first one's
-     * tool window tab (its output disappears while it's still running) and becomes the only one
-     * Stop Build can reach; and while Windows' BuildConsole would queue it behind the first
-     * ("Waiting for a build to complete..."), nothing guarantees ib_console does the same.
+     * One build at a time: calls [start] straight away if nothing is running; otherwise offers to
+     * stop the running build, and if the user agrees, calls [start] once it has actually stopped -
+     * never while it's still winding down, so the two never overlap. [onDeclined] if they cancel.
+     * Without this, a second build replaces the first one's tool window tab (its output disappears
+     * while it's still running) and becomes the only one Stop Build can reach; and while Windows'
+     * BuildConsole would queue it behind the first ("Waiting for a build to complete..."), nothing
+     * guarantees ib_console does the same.
      *
-     * Checked in [run], on the EDT, right where the build is registered as the active one - so
-     * two quick clicks can't both get past it. A Rebuild's chained build is unaffected: its clean
-     * has already ended by the time the build starts.
+     * Checked in [run], on the EDT, and [start] registers the build as the active one in the same
+     * EDT event - so two quick clicks can't both get past it. After a stop the check runs again
+     * before starting, in case something else started meanwhile. A Rebuild's chained build is
+     * unaffected: its clean has already ended by the time the build starts. Builds started from a
+     * background thread wait with [awaitNoBuildRunning] instead.
      */
-    private fun confirmNoBuildRunning(project: Project): Boolean {
-        if (!isBuildRunning()) return true
-        val stop = Messages.showYesNoDialog(
+    private fun whenNoBuildRunning(project: Project, onDeclined: () -> Unit, start: () -> Unit) {
+        val running = activeProcessHandler?.takeUnless { it.isProcessTerminated }
+        if (running == null) {
+            start()
+            return
+        }
+        if (!askToStopRunningBuild(project)) {
+            onDeclined()
+            return
+        }
+        val retried = AtomicBoolean()
+        val retry = {
+            if (retried.compareAndSet(false, true)) {
+                ApplicationManager.getApplication().invokeLater { whenNoBuildRunning(project, onDeclined, start) }
+            }
+        }
+        running.addProcessListener(object : ProcessListener {
+            override fun processTerminated(event: ProcessEvent) = retry()
+        })
+        // It may have ended between the check above and adding the listener, which then never fires.
+        if (running.isProcessTerminated) retry()
+        stopActiveProcess(project)
+    }
+
+    /**
+     * [whenNoBuildRunning] for a build started from a background thread - the IDE's build pipeline
+     * (see [IncredibuildProjectTaskRunner]), which reports its own outcome and so must wait here
+     * rather than be called back. Blocks until nothing is running and returns true, or returns
+     * false if the user chose not to stop the running build.
+     */
+    internal fun awaitNoBuildRunning(project: Project): Boolean {
+        while (true) {
+            val running = activeProcessHandler?.takeUnless { it.isProcessTerminated } ?: return true
+            var stop = false
+            ApplicationManager.getApplication().invokeAndWait({ stop = askToStopRunningBuild(project) }, ModalityState.any())
+            if (!stop) return false
+            PostHogClient.capture("stop_build_clicked", mapOf("hadActiveProcess" to true))
+            // Graceful where possible - see stopActiveProcess.
+            running.destroyProcess()
+            running.waitFor()
+        }
+    }
+
+    private fun askToStopRunningBuild(project: Project): Boolean =
+        Messages.showYesNoDialog(
             project,
-            "An Incredibuild build is already running. Stop it before starting another one.",
+            "An Incredibuild build is already running. Stop it and start this one once it has stopped?",
             "Incredibuild",
             "Stop Running Build",
             "Cancel",
             Messages.getWarningIcon()
         ) == Messages.YES
-        if (stop) stopActiveProcess(project)
-        return false
-    }
 
     /**
      * Stops whichever build/clean process is currently running, if any.
@@ -758,11 +806,18 @@ object IncredibuildRunner {
      * that fails), from [workingDirectory], with [environment] set on top of the inherited one.
      * Kept as executable + argument lists rather than pre-joined strings so quoting is only ever
      * done once, by whichever wrapper script actually launches them.
+     *
+     * [buildCache] opts the build into Incredibuild's Build Cache - `/BUILDCACHELOCAL=ON` on
+     * Windows, `--build-cache-local-shared` on Linux. On for the C/C++ compilers a CMake build
+     * runs, which the cache supports; off for MSBuild, since Build Cache doesn't support .NET
+     * builds yet, so .NET builds are accelerated without it rather than relying on the cache
+     * passing their tools through untouched.
      */
     internal class NativeBuild(
         val commands: List<NativeCommand>,
         val workingDirectory: String,
-        val environment: Map<String, String> = emptyMap()
+        val environment: Map<String, String> = emptyMap(),
+        val buildCache: Boolean = true
     )
 
     /**
@@ -792,6 +847,67 @@ object IncredibuildRunner {
         when (val prepared = prepareNativeBuild(project, installFolder, build)) {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
             is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, presentation)
+        }
+    }
+
+    /** How a build started from the IDE's own build pipeline ended - see [launchNativeBuildForIde]. */
+    internal sealed interface IdeBuildOutcome {
+        object Succeeded : IdeBuildOutcome
+        object Failed : IdeBuildOutcome
+        object Stopped : IdeBuildOutcome
+
+        /** Another Incredibuild build was running and the user chose not to stop it (see [whenNoBuildRunning]). */
+        object NotStarted : IdeBuildOutcome
+
+        /** The command couldn't be prepared - the caller should fall back to the IDE's own build. */
+        class NotPrepared(val message: String) : IdeBuildOutcome
+    }
+
+    /**
+     * As [launchNativeBuild], for a build the IDE's own Build/Rebuild started (see
+     * [IdeBuildAcceleration]): the same Incredibuild tool window, status-bar progress and
+     * notification, but with the outcome handed to [onOutcome] - exactly once, on the EDT, or
+     * straight away on the calling thread for [IdeBuildOutcome.NotPrepared] - so the caller can
+     * complete the IDE's build promise. Must be called from a background thread.
+     */
+    internal fun launchNativeBuildForIde(
+        project: Project,
+        installFolder: File,
+        build: NativeBuild,
+        actionType: String,
+        presentation: AcceleratedBuildPresentation,
+        onOutcome: (IdeBuildOutcome) -> Unit
+    ) {
+        val prepared = when (val result = prepareNativeBuild(project, installFolder, build)) {
+            is PreparedBuild.Failed -> return onOutcome(IdeBuildOutcome.NotPrepared(result.message))
+            is PreparedBuild.Ready -> result
+        }
+        ApplicationManager.getApplication().invokeLater {
+            var processHandler: OSProcessHandler? = null
+            run(
+                project,
+                prepared.commandLine,
+                presentation.contentName,
+                presentation.banner,
+                onNotStarted = {
+                    prepared.cleanUp()
+                    onOutcome(IdeBuildOutcome.NotStarted)
+                },
+                onStarted = { started ->
+                    processHandler = started
+                    PostHogClient.capture("ide_build_accelerated", mapOf("action" to actionType))
+                    trackInStatusBar(project, started, presentation)
+                }
+            ) { exitCode ->
+                prepared.cleanUp()
+                onOutcome(
+                    when {
+                        processHandler?.wasStopRequested() == true -> IdeBuildOutcome.Stopped
+                        exitCode == 0 -> IdeBuildOutcome.Succeeded
+                        else -> IdeBuildOutcome.Failed
+                    }
+                )
+            }
         }
     }
 
@@ -879,18 +995,7 @@ object IncredibuildRunner {
         val scriptFile = File.createTempFile("incredibuild-build-", ".ps1")
         scriptFile.deleteOnExit()
         scriptFile.writeText(
-            "& \"${buildConsolePath.absolutePath}\" " +
-                "${powerShellSingleQuoted("/command=\"${wrapperCmd.absolutePath}\"")} " +
-                "${powerShellSingleQuoted("/title=\"${project.name}\"")} " +
-                // Explicitly opts this session into Build Cache, the same way the Linux
-                // ib_console invocation below already does via --build-cache-local-shared - no
-                // /BuildCacheProfile= is passed alongside it because cl.exe/clang/gcc are
-                // already covered by BuildConsole's own built-in default profile (the bespoke
-                // *.xml sample profiles in the Incredibuild install's "BuildCache Profiles"
-                // folder are only for tools that default profile doesn't already know, e.g.
-                // rustc/lib for the Cargo build above, or nvcc/perl).
-                "/BUILDCACHELOCAL=ON\n" +
-                "exit \$LASTEXITCODE\n"
+            windowsLauncherScript(buildConsolePath.absolutePath, wrapperCmd.absolutePath, project.name, build.buildCache)
         )
 
         val commandLine = GeneralCommandLine("powershell")
@@ -902,6 +1007,24 @@ object IncredibuildRunner {
             wrapperCmd.delete()
         }
     }
+
+    /**
+     * The PowerShell script [prepareNativeBuildWindows] runs: BuildConsole with /command= pointed
+     * at [wrapperCmd] (see [windowsWrapperScript]), exiting with BuildConsole's own exit code.
+     */
+    internal fun windowsLauncherScript(buildConsole: String, wrapperCmd: String, title: String, buildCache: Boolean): String =
+        "& \"$buildConsole\" " +
+            "${powerShellSingleQuoted("/command=\"$wrapperCmd\"")} " +
+            powerShellSingleQuoted("/title=\"$title\"") +
+            // Explicitly opts this session into Build Cache, the same way the Linux ib_console
+            // invocation does via --build-cache-local-shared - no /BuildCacheProfile= is passed
+            // alongside it because cl.exe/clang/gcc are already covered by BuildConsole's own
+            // built-in default profile (the bespoke *.xml sample profiles in the Incredibuild
+            // install's "BuildCache Profiles" folder are only for tools that default profile
+            // doesn't already know, e.g. rustc/lib for the Cargo build above, or nvcc/perl).
+            // Left off where the build doesn't want it - see NativeBuild.buildCache.
+            (if (buildCache) " /BUILDCACHELOCAL=ON" else "") + "\n" +
+            "exit \$LASTEXITCODE\n"
 
     /**
      * The .cmd [prepareNativeBuildWindows] points BuildConsole's /command= at: [NativeBuild.environment]
@@ -975,7 +1098,10 @@ object IncredibuildRunner {
         }
         script.append("exec ").append(shellSingleQuoted(consolePath))
             .append(" --caption ").append(shellSingleQuoted(caption))
-            .append(" --ib-quiet --build-cache-local-shared --build-cache-basedir=\"\$PWD\" -- ")
+            .append(" --ib-quiet")
+        // Left off where the build doesn't want it - see NativeBuild.buildCache.
+        if (build.buildCache) script.append(" --build-cache-local-shared --build-cache-basedir=\"\$PWD\"")
+        script.append(" -- ")
         val commandTexts = build.commands.map { command ->
             (listOf(command.executable) + command.arguments).joinToString(" ") { shellSingleQuoted(it) }
         }

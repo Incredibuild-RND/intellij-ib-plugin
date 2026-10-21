@@ -4,6 +4,16 @@
      brings along, for the CidrBuildTargetAction/CPPToolchains/CPPEnvironment/CPPBuildUtil family
      these actions are built on - see actions/cmake/CMakeBuildCommand.kt. -->
 <idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Ahead of CLion's own CMakeProjectTaskRunner, which is itself order="first" - hence
+             the explicit "before": ProjectTaskManagerImpl assigns each task to the first runner
+             whose canRun accepts it, and this one only accepts when the user has opted in
+             (Settings > Tools > Incredibuild), declining to CLion's build otherwise. -->
+        <projectTaskRunner id="IncredibuildCMakeProjectTaskRunner"
+                           order="first, before CMakeProjectTaskRunner"
+                           implementation="com.incredibuild.ibplugin.actions.cmake.IncredibuildCMakeProjectTaskRunner"/>
+    </extensions>
+
     <actions>
         <!-- anchor="first" against the (so far only-a-separator) Incredibuild.Menu group
              declared in plugin.xml inserts this above that separator - Build ends up first,

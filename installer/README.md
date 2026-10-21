@@ -2,11 +2,15 @@
 
 Produces both distributable installers from `build/distributions/intellij-ib-plugin.zip`:
 
-- `scripts/install-intellij-ib-plugin.ps1` - a single, self-contained PowerShell
-  script (the plugin zip is embedded as base64) for anyone who'd rather not run
-  an unsigned `.exe`.
+- `build/distributions/install-intellij-ib-plugin.ps1` - a single, self-contained
+  PowerShell script (the plugin zip is embedded as base64) for anyone who'd
+  rather not run an unsigned `.exe`.
 - `build/distributions/intellij-ib-plugin.exe` - a self-extracting installer
   with zero visible windows, for double-click installs.
+
+Neither is committed to the repo. Publishing a GitHub release runs the
+**Release** workflow, whose `installers` job builds both on a Windows runner from
+the exact plugin zip the release published, and attaches them to the release.
 
 ## Usage
 
@@ -18,6 +22,13 @@ This runs `.\gradlew.bat buildPlugin` itself first, so
 `build/distributions/intellij-ib-plugin.zip` is always rebuilt from current
 source before either installer is packaged - it can never silently package a
 stale zip left over from an earlier build.
+
+To package an already-built zip instead (what the release workflow does), pass it
+with `-PluginZip`:
+
+```
+powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1 -PluginZip path\to\intellij-ib-plugin.zip
+```
 
 Prerequisites (both are standard on a Windows dev machine, neither is bundled):
 
@@ -36,7 +47,7 @@ plugin zip and report progress:
 
 | | `install-common.ps1` sandwiched between... | plugin zip | output |
 |---|---|---|---|
-| Standalone script | `standalone-header.ps1` / `standalone-footer.ps1` | embedded as base64 | `scripts/install-intellij-ib-plugin.ps1` (committed to the repo) |
+| Standalone script | `standalone-header.ps1` / `standalone-footer.ps1` | embedded as base64 | `build/distributions/install-intellij-ib-plugin.ps1` (attached to each GitHub release) |
 | SFX installer | `sfx-header.ps1` / `sfx-footer.ps1` | packaged alongside as a sibling file | assembled at build time, only shipped inside the `.exe` |
 
 ### The `.exe`'s pieces

@@ -2,6 +2,7 @@ import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.bundling.Zip
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -110,14 +111,16 @@ intellijPlatform {
         // resolve CMake-only classes - not a bug. Rather than dropping COMPATIBILITY_PROBLEMS
         // from failureLevel entirely (which would also hide a real, future compatibility
         // break, e.g. a 2026.x IDE removing an API this plugin uses), those 4 specific,
-        // already-reviewed problems are listed in ignoredProblemsFile instead - everything
+        // already-reviewed problems are listed in an ignored-problems file instead - everything
         // else in that category still fails the task. failureLevel is left at its default
         // (COMPATIBILITY_PROBLEMS + INTERNAL_API_USAGES; confirmed by observing which
         // categories actually failed the task even though deprecated/experimental/missing-
         // optional-dependency problems were also present and reported) - it already caught a
         // real, fixable internal-API usage (PluginManagerCore.getPlugin(), replaced with the
         // public isLoaded() instead) and should keep gating future ones the same way.
-        ignoredProblemsFile.set(rootProject.layout.projectDirectory.file("gradle/pluginVerifier-ignoredProblems.txt"))
+        //
+        // The ignored-problems file is set per IDE, not here - see the per-IDE verification
+        // tasks below.
         ides {
             create(IntelliJPlatformType.CLion, "2026.2")
             create(IntelliJPlatformType.RustRover, "2026.2")
@@ -129,6 +132,55 @@ intellijPlatform {
             }
         }
     }
+}
+
+// One verification run per IDE, each with only the ignored problems that IDE is expected to
+// report. A Plugin Verifier ignored-problems file applies to every IDE in a run - its conditions
+// can name a plugin but not an IDE - so a single shared file would also hide those same messages
+// where they *would* be real problems: "Package 'org.rust' is not found" is expected against
+// Rider (no Rust plugin) but would mean a broken build against RustRover, and the CMake-only
+// symbols are expected against RustRover but never against CLion. Splitting the runs keeps that
+// coverage.
+//
+// All three take the IDEs pluginVerification.ides resolves above and keep only their own, by the
+// productCode in each IDE's product-info.json. `verifyPlugin` itself verifies CLion and runs the
+// other two, so CI's `./gradlew verifyPlugin` still covers all three. Reports go to one
+// subdirectory each of build/reports/pluginVerifier, which CI uploads as a whole.
+data class PerIdeVerification(val productCode: String, val reportsSubdirectory: String, val ignoredProblems: String?)
+
+val perIdeVerifications = mapOf(
+    "verifyPlugin" to PerIdeVerification("CL", "clion", null),
+    "verifyPluginRustRover" to PerIdeVerification("RR", "rustrover", "gradle/pluginVerifier-ignoredProblems-rustrover.txt"),
+    "verifyPluginRider" to PerIdeVerification("RD", "rider", "gradle/pluginVerifier-ignoredProblems-rider.txt"),
+)
+
+for ((taskName, verification) in perIdeVerifications) {
+    val configure: VerifyPluginTask.() -> Unit = {
+        // A snapshot of the sources the plugin wired in, not `ides` itself - filtering a
+        // collection into its own sources would make it depend on itself.
+        val allIdes = files(ides.from.toList())
+        val productCode = verification.productCode
+        ides.setFrom(allIdes.filter { ide ->
+            val productInfo = ide.resolve("product-info.json")
+            productInfo.isFile &&
+                Regex(""""productCode"\s*:\s*"([A-Z]+)"""").find(productInfo.readText())?.groupValues?.get(1) == productCode
+        })
+        verification.ignoredProblems?.let { ignoredProblemsFile.set(layout.projectDirectory.file(it)) }
+        verificationReportsDirectory.set(layout.buildDirectory.dir("reports/pluginVerifier/${verification.reportsSubdirectory}"))
+    }
+    if (taskName == "verifyPlugin") {
+        tasks.named<VerifyPluginTask>(taskName, configure)
+    } else {
+        tasks.register<VerifyPluginTask>(taskName) {
+            group = "intellij platform"
+            description = "Verifies the plugin against ${verification.reportsSubdirectory} only - see build.gradle.kts."
+            configure()
+        }
+    }
+}
+
+tasks.named("verifyPlugin") {
+    dependsOn("verifyPluginRustRover", "verifyPluginRider")
 }
 
 // Plain `runIde` launches intellijIdeaUltimate (the platform this plugin's dependencies block

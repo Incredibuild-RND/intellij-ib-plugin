@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.actions.dotnet
 
+import com.google.gson.JsonParser
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeBuild
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeCommand
 import org.w3c.dom.Document
@@ -173,6 +174,22 @@ internal fun solutionProjectFiles(solutionText: String, solutionDir: File): List
 }
 
 /**
+ * The project files a solution filter (.slnf) includes - for [needsRestore], so a filtered build
+ * only restores when one of *its* projects needs it, not when some project the filter leaves out
+ * does. A filter is JSON, `{"solution": {"path": ..., "projects": [...]}}`: `path` is the .sln
+ * relative to the filter's own directory ([filterDir]), and each project is relative to that
+ * solution's directory, as MSBuild resolves them.
+ */
+internal fun solutionFilterProjectFiles(filterText: String, filterDir: File): List<String> {
+    val solution = JsonParser.parseString(filterText).asJsonObject.getAsJsonObject("solution")
+    val solutionDir = File(filterDir, nativeSeparators(solution.get("path").asString)).normalize().parentFile
+    return solution.getAsJsonArray("projects")
+        .map { File(solutionDir, nativeSeparators(it.asString)).path }
+        .filter { it.endsWith("proj", ignoreCase = true) }
+        .distinct()
+}
+
+/**
  * The accelerated build for a whole solution - the equivalent of Rider's own Build/Rebuild
  * Solution. [entryPoint] is the .sln/.slnx, or the .slnf when a solution filter is open (MSBuild
  * builds a filter directly, honoring which projects it includes).
@@ -191,7 +208,7 @@ internal fun solutionBuild(
         "-p:Configuration=$configuration",
         "-p:Platform=$platform",
     ) + restoreArguments(restore) + COMMON_MSBUILD_ARGUMENTS
-    return NativeBuild(listOf(NativeCommand(tool.executable, arguments)), File(entryPoint).absoluteFile.parent)
+    return NativeBuild(listOf(NativeCommand(tool.executable, arguments)), File(entryPoint).absoluteFile.parent, buildCache = false)
 }
 
 /**
@@ -225,7 +242,7 @@ internal fun projectsBuild(
         "-p:Configuration=$configuration",
         "-p:Platform=$platform",
     ) + restoreArguments(restore) + COMMON_MSBUILD_ARGUMENTS
-    return NativeBuild(listOf(NativeCommand(tool.executable, arguments)), File(solutionFile).absoluteFile.parent)
+    return NativeBuild(listOf(NativeCommand(tool.executable, arguments)), File(solutionFile).absoluteFile.parent, buildCache = false)
 }
 
 private fun restoreArguments(restore: Boolean): List<String> = if (restore) listOf(RESTORE_ARGUMENT) else emptyList()

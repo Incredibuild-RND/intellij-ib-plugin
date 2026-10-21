@@ -19,6 +19,7 @@ import com.incredibuild.ibplugin.settings.IncredibuildSettings
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.jetbrains.cidr.cpp.cmake.model.CMakeConfiguration
 import com.jetbrains.cidr.cpp.cmake.workspace.CMakeWorkspace
 import com.jetbrains.cidr.cpp.execution.CMakeAppRunConfiguration
 import com.jetbrains.cidr.cpp.toolchains.CPPBuildUtil
@@ -96,10 +97,49 @@ internal fun deriveCMakeBuild(project: Project, kind: CMakeBuildKind): CMakeBuil
         null
     }
 
+/**
+ * The cmake invocation for one [buildConfiguration] (a target in one CMake profile) handed over
+ * by CLion's own build pipeline - see [IncredibuildCMakeProjectTaskRunner]. [targetName] null
+ * means every target, cmake's default "all". Must be called from a background thread.
+ */
+internal fun deriveCMakeBuild(
+    project: Project,
+    buildConfiguration: CMakeConfiguration,
+    targetName: String?,
+    cleanFirst: Boolean
+): CMakeBuildResolution? =
+    try {
+        ReadAction.compute<CMakeBuildResolution?, Throwable> {
+            resolveCMakeBuild(project, buildConfiguration, targetName, cleanFirst)
+        }
+    } catch (e: Exception) {
+        LOG.warn("Could not derive the CMake build command for ${buildConfiguration.name}", e)
+        null
+    }
+
 private fun resolveCMakeBuild(project: Project, kind: CMakeBuildKind): CMakeBuildResolution? {
     val buildAndRun = CMakeAppRunConfiguration.getSelectedBuildAndRunConfigurations(project) ?: return null
     val buildConfiguration = buildAndRun.buildConfiguration
+    // An explicit target set on the run configuration (e.g. "Build 'foo'" instead of just
+    // "Build") wins over the target the configuration would otherwise produce - matching
+    // CMakeAppRunConfiguration.BuildAndRunConfigurations' own field of the same name.
+    // wholeProject (Build All) passes no target at all: cmake's own default target already
+    // means "build everything", the same "all"/"ALL_BUILD" pseudo-target CLion's own Build
+    // Project action builds.
+    val targetName = if (kind.wholeProject) {
+        null
+    } else {
+        buildAndRun.explicitBuildTargetName?.takeIf { it.isNotBlank() } ?: buildConfiguration.target.name
+    }
+    return resolveCMakeBuild(project, buildConfiguration, targetName, kind.cleanFirst)
+}
 
+private fun resolveCMakeBuild(
+    project: Project,
+    buildConfiguration: CMakeConfiguration,
+    targetName: String?,
+    cleanFirst: Boolean
+): CMakeBuildResolution? {
     val profileInfo = CMakeWorkspace.getInstance(project).getProfileInfoFor(buildConfiguration)
     val environment = profileInfo.environment ?: return null
 
@@ -139,19 +179,11 @@ private fun resolveCMakeBuild(project: Project, kind: CMakeBuildKind): CMakeBuil
     // directory itself was configured and just ignore --config.
     buildConfiguration.buildType.takeIf { it.isNotBlank() }?.let { parameters += listOf("--config", it) }
 
-    if (!kind.wholeProject) {
-        // An explicit target set on the run configuration (e.g. "Build 'foo'" instead of just
-        // "Build") wins over the target the configuration would otherwise produce - matching
-        // CMakeAppRunConfiguration.BuildAndRunConfigurations' own field of the same name.
-        val targetName = buildAndRun.explicitBuildTargetName?.takeIf { it.isNotBlank() }
-            ?: buildConfiguration.target.name
+    if (targetName != null) {
         parameters += listOf("--target", targetName)
     }
-    // wholeProject (Build All) omits --target entirely: cmake's own default target already
-    // means "build everything", the same "all"/"ALL_BUILD" pseudo-target CLion's own Build
-    // Project action builds.
 
-    if (kind.cleanFirst) {
+    if (cleanFirst) {
         parameters += "--clean-first"
     }
 

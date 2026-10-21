@@ -1,5 +1,5 @@
 # Shared by both installer/standalone-footer.ps1 (assembled into the
-# self-contained scripts/install-intellij-ib-plugin.ps1) and
+# self-contained install-intellij-ib-plugin.ps1) and
 # installer/sfx-footer.ps1 (assembled into the SFX installer's own
 # install.ps1) via installer/build-installer.ps1 - edit this ONE file rather
 # than both generated scripts.
