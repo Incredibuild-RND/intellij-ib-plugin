@@ -167,6 +167,14 @@ for ((taskName, verification) in perIdeVerifications) {
         })
         verification.ignoredProblems?.let { ignoredProblemsFile.set(layout.projectDirectory.file(it)) }
         verificationReportsDirectory.set(layout.buildDirectory.dir("reports/pluginVerifier/${verification.reportsSubdirectory}"))
+        // A home directory of its own for each run. These tasks can run in parallel (the
+        // configuration cache allows it), and every Plugin Verifier run starts by deleting and
+        // recreating <home>/extracted-plugins - with the shared default home (~/.pluginVerifier),
+        // one run deleting it while another walks it fails that run with NoSuchFileException.
+        systemProperty(
+            "plugin.verifier.home.dir",
+            layout.buildDirectory.dir("pluginVerifier/${verification.reportsSubdirectory}").get().asFile.absolutePath
+        )
     }
     if (taskName == "verifyPlugin") {
         tasks.named<VerifyPluginTask>(taskName, configure)
