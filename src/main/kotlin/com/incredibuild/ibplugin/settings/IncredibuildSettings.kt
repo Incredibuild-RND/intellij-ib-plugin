@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.settings
 
+import com.incredibuild.ibplugin.actions.dotnet.MsBuildLocator
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
@@ -30,11 +31,19 @@ class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State
         var jobCount: Int = 300
 
         // Opt-in, and deliberately defaulted off: when enabled, the plugin takes over the
-        // IDE's own build actions (Build Project, and the build phase that Run/Test kick
-        // off), which changes what a standard IDE command does. The Incredibuild menu
+        // IDE's own Build/Rebuild actions and the build that runs before a run configuration
+        // starts - in RustRover, CLion and Rider (see IdeBuildAcceleration) - which changes
+        // what a standard IDE command does. The field keeps its original name so the saved
+        // value survives the setting's rename. The Incredibuild menu
         // actions are unaffected by this flag - those always accelerate, since the user
         // asked for Incredibuild by name.
         var accelerateIdeBuilds: Boolean = false
+
+        // Rider only: the MSBuild to run .NET builds with. Blank means auto-detect (see
+        // MsBuildLocator) - Rider's own toolset choice lives in its backend settings, which the
+        // frontend this plugin runs in has no API to read, so this is the way to point the
+        // accelerated build at a specific one when the detected one isn't it.
+        var msBuildPath: String = ""
     }
 
     private var state = State()
@@ -55,6 +64,18 @@ class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State
         get() = state.accelerateIdeBuilds
         set(value) {
             state.accelerateIdeBuilds = value
+        }
+
+    var msBuildPath: String
+        get() = state.msBuildPath
+        set(value) {
+            val trimmed = value.trim()
+            if (trimmed != state.msBuildPath) {
+                // Any change - including clearing it back to auto-detect - re-detects on the next
+                // build, which also picks up an MSBuild installed since the last detection.
+                MsBuildLocator.clearCache()
+            }
+            state.msBuildPath = trimmed
         }
 
     companion object {
