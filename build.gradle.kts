@@ -73,10 +73,11 @@ tasks.withType<AbstractArchiveTask>().configureEach {
     isPreserveFileTimestamps = true
 }
 
-// Compiled against com.jetbrains.rust 262.8665.323 (2026.2 line), but the specific APIs this
-// plugin uses (CargoCommandConfiguration.parametersHolder, RustProjectSettingsService.toolchain,
-// RsToolchainBase.pathToCargoExecutable, etc.) are verified identical in the 261.x (2026.1) line
-// too, so declare compatibility down to build 261 rather than the auto-derived 262.
+// Compiled against com.jetbrains.rust 262.8665.323 (2026.2 line), but declares compatibility down
+// to build 261 rather than the auto-derived 262: the APIs this plugin uses are the same in the
+// 261.x (2026.1) line, except CargoBuildAdapter's attach API, which IncredibuildProjectTaskRunner
+// resolves for whichever version is loaded. The Plugin Verifier checks both lines (see
+// pluginVerification below), so a 262-only API used directly fails the build.
 intellijPlatform {
     pluginConfiguration {
         ideaVersion {
@@ -121,14 +122,21 @@ intellijPlatform {
         //
         // The ignored-problems file is set per IDE, not here - see the per-IDE verification
         // tasks below.
+        //
+        // Both ends of the declared sinceBuild..untilBuild range (261-262), not just the 262 line
+        // everything is compiled against - otherwise 2026.1 would accept the plugin without ever
+        // having been verified, which matters most for the Rider half (rider/ is compiled against
+        // Rider 2026.2 only, and leans on Rider's own solution-model APIs).
         ides {
-            create(IntelliJPlatformType.CLion, "2026.2")
-            create(IntelliJPlatformType.RustRover, "2026.2")
-            // The only IDE that ever loads the .NET half (rider-support.xml).
-            // Rider is only published as a Maven artifact, not a regular installer - see
-            // https://github.com/JetBrains/intellij-platform-gradle-plugin/issues/1852.
-            create(IntelliJPlatformType.Rider, "2026.2") {
-                useInstaller = false
+            for (version in listOf("2026.1", "2026.2")) {
+                create(IntelliJPlatformType.CLion, version)
+                create(IntelliJPlatformType.RustRover, version)
+                // The only IDE that ever loads the .NET half (rider-support.xml).
+                // Rider is only published as a Maven artifact, not a regular installer - see
+                // https://github.com/JetBrains/intellij-platform-gradle-plugin/issues/1852.
+                create(IntelliJPlatformType.Rider, version) {
+                    useInstaller = false
+                }
             }
         }
     }

@@ -71,7 +71,8 @@ If Incredibuild isn't installed on the machine, the menu commands offer to open
 - RustRover, or IntelliJ IDEA Ultimate with the Rust plugin - 2026.1 or 2026.2 (builds 261-262).
   The Rust plugin is released for one IDE line at a time, and this plugin depends on it, so support
   for a newer line follows a Rust plugin release for it.
-- Or Rider 2026.2, with MSBuild (Visual Studio / Build Tools) or the .NET SDK installed.
+- Or CLion 2026.1 or 2026.2, with a CMake project.
+- Or Rider 2026.1 or 2026.2, with MSBuild (Visual Studio / Build Tools) or the .NET SDK installed.
 - [Incredibuild](https://www.incredibuild.com/) installed, on Windows or Linux:
   - Windows: 10.37.1 or later
   - Linux: 4.29.3 or later, installed under `/opt/incredibuild`

@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.actions
 
+import com.intellij.build.BuildProgressListener
 import com.intellij.build.BuildViewManager
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
@@ -40,6 +41,7 @@ import org.rust.cargo.runconfig.buildtool.CargoBuildTaskRunner
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.project.model.CargoProject
 import java.io.File
+import java.lang.reflect.InvocationTargetException
 import java.nio.file.Path
 import java.util.concurrent.Future
 
@@ -232,10 +234,10 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
      *
      * This reuses the Rust plugin's build machinery wholesale and substitutes only the
      * process: [CargoBuildManager.execute] supplies the progress indicator, build queue and
-     * result future, and [CargoBuildAdapter.attachToProcessHandler] parses cargo's JSON
-     * output into build-tree events. The adapter requires the handler to already be on the
-     * context, and starts the process itself - so it must be attached last and the handler
-     * must not be started here.
+     * result future, and [CargoBuildAdapter] parses cargo's JSON output into build-tree
+     * events. Attaching the adapter starts the process (see [attachCargoBuildAdapter]), and the
+     * adapter requires the handler to already be on the context - so it must be attached last
+     * and the handler must not be started here.
      *
      * Returns null if the command could not be prepared, leaving the caller to fall back to
      * an ordinary Cargo build.
@@ -293,7 +295,7 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
                 override fun processTerminated(event: ProcessEvent) = prepared.cleanUp()
             })
             runningContext.processHandler = processHandler
-            CargoBuildAdapter.attachToProcessHandler(runningContext, project.service<BuildViewManager>())
+            attachCargoBuildAdapter(runningContext, project.service<BuildViewManager>())
         }
     }
 
@@ -334,6 +336,44 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
         cargoRunner.run(project, context, *tasks)
             .onSuccess { promise.setResult(it) }
             .onError { promise.setError(it) }
+    }
+
+    /**
+     * Attaches the Rust plugin's [CargoBuildAdapter] to [context]'s process handler and starts the
+     * process, the way that plugin's own `CargoBuildManager` does in whichever version is loaded -
+     * the API changed within the IDE lines this plugin supports:
+     *  - 2026.2 (262): `CargoBuildAdapter.attachToProcessHandler(context, listener)`, which does
+     *    all of it; the constructor is private;
+     *  - 2026.1 (261): no such method - the caller constructs the adapter (public constructor),
+     *    adds it as a process listener and starts the process.
+     *
+     * Both are looked up reflectively so neither is referenced directly: a direct call to the 262
+     * method compiled fine against 262 but failed with NoSuchMethodError on 2026.1 IDEs, which
+     * the Plugin Verifier caught once 2026.1 was verified.
+     */
+    private fun attachCargoBuildAdapter(context: CargoBuildContext, listener: BuildProgressListener) {
+        try {
+            val attach = runCatching {
+                CargoBuildAdapter.Companion::class.java.getMethod(
+                    "attachToProcessHandler",
+                    CargoBuildContext::class.java,
+                    BuildProgressListener::class.java
+                )
+            }.getOrNull()
+            if (attach != null) {
+                attach.invoke(CargoBuildAdapter.Companion, context, listener)
+                return
+            }
+
+            val processHandler = checkNotNull(context.processHandler) { "The process handler must be set first" }
+            val adapter = CargoBuildAdapter::class.java
+                .getConstructor(CargoBuildContext::class.java, BuildProgressListener::class.java)
+                .newInstance(context, listener)
+            processHandler.addProcessListener(adapter as ProcessListener)
+            processHandler.startNotify()
+        } catch (e: InvocationTargetException) {
+            throw e.targetException
+        }
     }
 
     /**

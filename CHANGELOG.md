@@ -30,6 +30,12 @@
   GitHub release, built by the release workflow from the published plugin, instead of the script being committed to
   the repository.
 
+### Fixed
+
+- With **Accelerate the IDE's own build actions** on, **Build Project** in RustRover 2026.1 (and IntelliJ IDEA / CLion
+  2026.1 with the Rust plugin) failed with `NoSuchMethodError` instead of building, because it relied on a Rust plugin
+  API that only exists from 2026.2. The plugin is now verified against both 2026.1 and 2026.2 of every supported IDE.
+
 ## [1.0.3]
 
 ### Added
