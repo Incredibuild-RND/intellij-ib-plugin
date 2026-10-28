@@ -95,6 +95,12 @@ If Incredibuild isn't installed on the machine, the menu commands offer to open
   Download the [latest release](https://github.com/Incredibuild-RND/intellij-ib-plugin/releases/latest) and install it manually using
   <kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>⚙️</kbd> > <kbd>Install plugin from disk...</kbd>
 
+- On Windows, with an installer:
+
+  The same [release page](https://github.com/Incredibuild-RND/intellij-ib-plugin/releases/latest) also has
+  `intellij-ib-plugin.exe` and `install-intellij-ib-plugin.ps1`, which install the plugin into every supported
+  JetBrains IDE found on the machine. Close those IDEs first.
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](./LICENSE). See [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution terms.

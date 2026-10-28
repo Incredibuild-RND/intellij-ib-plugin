@@ -101,35 +101,12 @@ jobs:
 
   # Build the Windows installers from the exact plugin zip the job above just published, and attach
   # them to the same release - so they're reproducible from CI rather than built locally and
-  # committed. Windows-only: the .exe needs csc.exe and 7-Zip, and the standalone script is run
-  # with Windows PowerShell, which is also what assembles it here (see installer/README.md).
+  # committed. Its own workflow so it can also be run by hand - see installers.yml.
   installers:
     name: Build Installers
     needs: [ release ]
-    runs-on: windows-latest
     permissions:
       contents: write
-    steps:
-
-      # Check out the current repository
-      - name: Fetch Sources
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.release.tag_name }}
-
-      # The zip "Upload Release Asset" attached, not a fresh build
-      - name: Download Published Plugin
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: powershell
-        run: gh release download "${{ github.event.release.tag_name }}" --repo "${{ github.repository }}" --pattern intellij-ib-plugin.zip --dir build/published
-
-      - name: Build Installers
-        shell: powershell
-        run: .\installer\build-installer.ps1 -PluginZip build\published\intellij-ib-plugin.zip
-
-      - name: Upload Installers
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: powershell
-        run: gh release upload "${{ github.event.release.tag_name }}" --repo "${{ github.repository }}" --clobber build/distributions/install-intellij-ib-plugin.ps1 build/distributions/intellij-ib-plugin.exe
+    uses: ./.github/workflows/installers.yml
+    with:
+      tag: ${{ github.event.release.tag_name }}

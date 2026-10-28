@@ -9,8 +9,12 @@ Produces both distributable installers from `build/distributions/intellij-ib-plu
   with zero visible windows, for double-click installs.
 
 Neither is committed to the repo. Publishing a GitHub release runs the
-**Release** workflow, whose `installers` job builds both on a Windows runner from
+**Release** workflow, whose `installers` job ([installers.yml](../.github/workflows/installers.yml)) builds both on a Windows runner from
 the exact plugin zip the release published, and attaches them to the release.
+The same workflow runs on pull requests that change the installers, and can be run
+by hand (**Actions > Installers > Run workflow**, once it's on the default branch):
+without a tag it builds the plugin from the branch and only uploads the installers
+as a workflow artifact.
 
 ## Usage
 
