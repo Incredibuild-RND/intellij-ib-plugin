@@ -15,15 +15,17 @@
  */
 package com.incredibuild.ibplugin.actions
 
-import com.incredibuild.ibplugin.actions.cmake.hasCMakeWorkspace
 import com.intellij.execution.ExecutionTargetManager
 import com.intellij.execution.RunManager
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.registry.Registry
 import com.incredibuild.ibplugin.settings.IncredibuildSettings
 import org.rust.cargo.project.model.cargoProjectsIfCreated
+import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.runconfig.buildtool.CargoBuildManager
 import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.profiles.CargoBuildProfile
@@ -31,6 +33,7 @@ import org.rust.cargo.runconfig.profiles.RsDefaultProfileExecutionTarget
 import org.rust.cargo.toolchain.CargoCommandLine
 import org.rust.cargo.toolchain.RustChannel
 import org.rust.cargo.toolchain.tools.Cargo
+import java.io.File
 
 private val LOG = Logger.getInstance("com.incredibuild.ibplugin.actions.CargoBuildCommand")
 
@@ -164,8 +167,46 @@ private fun replacingCargoFlag(
     return cargoArgs + replacement + passthrough
 }
 
-/** A cargo invocation to accelerate: the command to run and the directory to run it in. */
-internal data class CargoInvocation(val command: String, val workingDirectory: String)
+/**
+ * A cargo invocation to accelerate: the command to run and the directory to run it in.
+ *
+ * [command] starts with a bare `cargo` - BuildConsole's `/command="..."` can't safely carry a
+ * quoted executable path of its own - so [cargoBinDir], the directory of the cargo RustRover is
+ * configured with, is put first on PATH for the build instead (see IncredibuildRunner.prepareBuild).
+ * Without it the build only works where that directory happens to be on PATH already, which
+ * rustup doesn't guarantee and a toolchain configured elsewhere in RustRover never is: the
+ * build then fails with "'cargo' is not recognized". Null if no cargo could be found, leaving
+ * PATH as it is.
+ */
+internal data class CargoInvocation(
+    val command: String,
+    val workingDirectory: String,
+    val cargoBinDir: String? = null
+)
+
+internal val CARGO_EXECUTABLE_NAME = if (SystemInfo.isWindows) "cargo.exe" else "cargo"
+
+/**
+ * The cargo executable RustRover itself would run: the one in the project's configured Rust
+ * toolchain, falling back to rustup's default `~/.cargo/bin` - or null if neither exists.
+ */
+internal fun resolveCargoExecutable(project: Project): String? {
+    project.service<RustProjectSettingsService>().toolchain?.let { toolchain ->
+        val path = toolchain.pathToCargoExecutable("cargo")
+        if (File(path.toString()).exists()) {
+            return path.toString()
+        }
+    }
+
+    val defaultCargo = File(System.getProperty("user.home"), ".cargo${File.separator}bin${File.separator}$CARGO_EXECUTABLE_NAME")
+    if (defaultCargo.exists()) {
+        return defaultCargo.absolutePath
+    }
+
+    return null
+}
+
+private fun cargoBinDir(project: Project): String? = resolveCargoExecutable(project)?.let { File(it).parent }
 
 /**
  * Whether [project] has a Cargo workspace at all - used to hide the Cargo-flavoured
@@ -178,18 +219,6 @@ internal data class CargoInvocation(val command: String, val workingDirectory: S
  */
 internal fun hasCargoWorkspace(project: Project): Boolean =
     project.cargoProjectsIfCreated?.hasAtLeastOneValidProject == true
-
-/**
- * [label] as-is, unless [project] has both a Cargo and a CMake workspace loaded at once (e.g.
- * Rust with a CMake-built C dependency, or CMake + Corrosion) - a case the plain per-workspace
- * `update()` checks don't disambiguate, since both the Cargo and CMake actions would otherwise
- * show the identical "Build"/"Rebuild" text side by side in the same Incredibuild menu. Only
- * reached once a caller's own `update()` has already confirmed its workspace is present, so
- * this never needs to decide which (if either) action should be hidden - just how to label the
- * one that is shown.
- */
-internal fun disambiguatedLabel(project: Project, label: String, suffix: String): String =
-    if (hasCargoWorkspace(project) && hasCMakeWorkspace(project)) "$label ($suffix)" else label
 
 /**
  * The cargo invocation to accelerate, taken from what RustRover's own Build Project would
@@ -310,7 +339,7 @@ private fun renderInvocation(
         ?: return null
     // Blank entries are dropped rather than joined: the resolved argument list can contain
     // empty strings, and those would render as stray double spaces in the command.
-    return CargoInvocation(rendered.filter { it.isNotBlank() }.joinToString(" "), workingDirectory)
+    return CargoInvocation(rendered.filter { it.isNotBlank() }.joinToString(" "), workingDirectory, cargoBinDir(project))
 }
 
 /**
@@ -354,7 +383,7 @@ private fun workspaceBuildInvocation(project: Project, jobCount: Int): CargoInvo
     if (Registry.`is`(COMPILE_ALL_TARGETS_REGISTRY_KEY, true)) args += "--all-targets"
     selectedProfile(project)?.let { args += listOf("--profile", it) }
     val command = "cargo build " + withJobCount(withAlwaysColor(args), jobCount).joinToString(" ")
-    return CargoInvocation(command, project.basePath ?: ".")
+    return CargoInvocation(command, project.basePath ?: ".", cargoBinDir(project))
 }
 
 /**

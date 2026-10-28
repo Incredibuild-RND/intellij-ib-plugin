@@ -254,7 +254,8 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
             project,
             installFolder,
             resolved.invocation.command,
-            resolved.invocation.workingDirectory
+            resolved.invocation.workingDirectory,
+            resolved.invocation.cargoBinDir
         )
         if (prepared !is IncredibuildRunner.PreparedBuild.Ready) {
             if (prepared is IncredibuildRunner.PreparedBuild.Failed) LOG.warn(prepared.message)

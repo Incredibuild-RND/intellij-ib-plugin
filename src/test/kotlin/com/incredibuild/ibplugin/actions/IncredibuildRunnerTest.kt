@@ -25,6 +25,18 @@ import org.junit.Test
 class IncredibuildRunnerTest {
 
     @Test
+    fun `pathWithFirst puts the cargo directory ahead of the existing PATH`() {
+        val sep = java.io.File.pathSeparator
+        assertEquals("C:\\cargo\\bin${sep}C:\\Windows", IncredibuildRunner.pathWithFirst("C:\\cargo\\bin", "C:\\Windows"))
+    }
+
+    @Test
+    fun `pathWithFirst is just the directory when there is no PATH`() {
+        assertEquals("/home/u/.cargo/bin", IncredibuildRunner.pathWithFirst("/home/u/.cargo/bin", null))
+        assertEquals("/home/u/.cargo/bin", IncredibuildRunner.pathWithFirst("/home/u/.cargo/bin", ""))
+    }
+
+    @Test
     fun `batchEscaped doubles a lone percent`() {
         assertEquals("%%TEMP%%", IncredibuildRunner.batchEscaped("%TEMP%"))
     }

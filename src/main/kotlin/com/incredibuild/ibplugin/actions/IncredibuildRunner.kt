@@ -190,7 +190,14 @@ object IncredibuildRunner {
             override fun run(indicator: ProgressIndicator) {
                 val installFolder = ensureIncredibuildReady(project, actionType) ?: return
                 val resolved = invocation()
-                buildViaIncredibuild(project, installFolder, resolved.command, resolved.workingDirectory, actionType)
+                buildViaIncredibuild(
+                    project,
+                    installFolder,
+                    resolved.command,
+                    resolved.workingDirectory,
+                    actionType,
+                    cargoBinDir = resolved.cargoBinDir
+                )
             }
         })
     }
@@ -209,9 +216,10 @@ object IncredibuildRunner {
         cargoCommand: String,
         workingDirectory: String,
         actionType: String,
-        onFinished: ((exitCode: Int) -> Unit)? = null
+        onFinished: ((exitCode: Int) -> Unit)? = null,
+        cargoBinDir: String? = null
     ) {
-        when (val prepared = prepareBuild(project, installFolder, cargoCommand, workingDirectory)) {
+        when (val prepared = prepareBuild(project, installFolder, cargoCommand, workingDirectory, cargoBinDir)) {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
             is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, onFinished = onFinished)
         }
@@ -230,17 +238,34 @@ object IncredibuildRunner {
         class Failed(val message: String) : PreparedBuild
     }
 
+    /**
+     * [cargoBinDir], if given, is put first on the build's PATH, so the bare `cargo` that
+     * [cargoCommand] starts with is the cargo RustRover is configured with - see
+     * [CargoInvocation.cargoBinDir]. BuildConsole/ib_console run the command in the environment
+     * they're launched with, so setting it on this process is enough.
+     */
     internal fun prepareBuild(
         project: Project,
         installFolder: File,
         cargoCommand: String,
-        workingDirectory: String
-    ): PreparedBuild =
-        if (SystemInfo.isLinux) {
+        workingDirectory: String,
+        cargoBinDir: String? = null
+    ): PreparedBuild {
+        val prepared = if (SystemInfo.isLinux) {
             prepareBuildLinux(project, installFolder, cargoCommand, workingDirectory)
         } else {
             prepareBuildWindows(project, installFolder, cargoCommand, workingDirectory)
         }
+        if (prepared is PreparedBuild.Ready && cargoBinDir != null) {
+            val currentPath = prepared.commandLine.environment["PATH"] ?: System.getenv("PATH")
+            prepared.commandLine.withEnvironment("PATH", pathWithFirst(cargoBinDir, currentPath))
+        }
+        return prepared
+    }
+
+    /** [currentPath] with [directory] put first, using the OS's PATH separator. */
+    internal fun pathWithFirst(directory: String, currentPath: String?): String =
+        if (currentPath.isNullOrEmpty()) directory else directory + File.pathSeparator + currentPath
 
     private fun prepareBuildWindows(
         project: Project,

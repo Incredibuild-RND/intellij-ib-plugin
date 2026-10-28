@@ -13,6 +13,13 @@
 // unresolved when verified against RustRover, which has no CMake plugin - the optional-
 // dependency split (plugin.xml's cmake-support.xml) working as intended, confirmed by the
 // Verifier's own "Missing dependencies: com.intellij.cmake (optional): Unavailable".
+//
+// Caveat: these package-level lines also hide a CMake class reached from code that DOES run in
+// RustRover - the Verifier reports every such use under the same message. That's how
+// disambiguatedLabel calling hasCMakeWorkspace from the Cargo actions' update() got past it and
+// threw NoClassDefFoundError in RustRover. Code shared by the Rust and CMake halves must only
+// touch the other half's classes behind a PluginManagerCore.isLoaded check (see
+// WorkspaceLabels.kt).
 com.incredibuild.ibplugin:Package 'com\.jetbrains\.cidr\.cpp\.toolchains' is not found
 com.incredibuild.ibplugin:Package 'com\.jetbrains\.cidr\.cpp\.cmake' is not found
 com.incredibuild.ibplugin:Access to unresolved class com\.jetbrains\.cidr\.cpp\.execution\.CMakeAppRunConfiguration\.BuildAndRunConfigurations
