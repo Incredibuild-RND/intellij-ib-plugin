@@ -40,8 +40,10 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.util.concurrency.AppExecutorUtil
 import com.incredibuild.ibplugin.analytics.PostHogClient
 import java.io.File
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Matches the "Build ID: {<guid>}" line BuildConsole prints to stdout when a build starts.
@@ -68,6 +70,14 @@ private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
 private const val NOTIFICATION_GROUP_ID = "Incredibuild"
 
 private const val STATUS_POLL_INTERVAL_MS = 250L
+
+/**
+ * How long a build waiting for a running one to stop gives it before giving up - see
+ * [IncredibuildRunner.whenNoBuildRunning]. Generous, because a graceful Incredibuild cancellation
+ * lets the build system wind down on its own rather than killing it, but finite: a process that
+ * never exits must not leave the new build - or the IDE build waiting on it - pending forever.
+ */
+private const val STOP_TIMEOUT_MS = 120_000L
 
 /** A POSIX shell variable name - see [IncredibuildRunner]'s CMake Linux environment export. */
 internal val VALID_SHELL_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
@@ -481,7 +491,7 @@ object IncredibuildRunner {
      * Must be called on the EDT. Only one build runs at a time (see [whenNoBuildRunning]), so
      * this may start the process later - once a running build the user chose to stop has
      * stopped - or not at all: [onStarted] gets the running process, [onNotStarted] is called
-     * instead (and [onFinished] never is) if the user cancels.
+     * instead (and [onFinished] never is) if the user cancels, or the running build doesn't stop in time.
      */
     fun run(
         project: Project,
@@ -677,7 +687,8 @@ object IncredibuildRunner {
     /**
      * One build at a time: calls [start] straight away if nothing is running; otherwise offers to
      * stop the running build, and if the user agrees, calls [start] once it has actually stopped -
-     * never while it's still winding down, so the two never overlap. [onDeclined] if they cancel.
+     * never while it's still winding down, so the two never overlap. [onDeclined] if they cancel,
+     * or if it hasn't stopped within [STOP_TIMEOUT_MS] (the user is told why).
      * Without this, a second build replaces the first one's tool window tab (its output disappears
      * while it's still running) and becomes the only one Stop Build can reach; and while Windows'
      * BuildConsole would queue it behind the first ("Waiting for a build to complete..."), nothing
@@ -699,9 +710,10 @@ object IncredibuildRunner {
             onDeclined()
             return
         }
-        val retried = AtomicBoolean()
+        // Whichever comes first - the old build ending, or the timeout - decides; the other is ignored.
+        val settled = AtomicBoolean()
         val retry = {
-            if (retried.compareAndSet(false, true)) {
+            if (settled.compareAndSet(false, true)) {
                 ApplicationManager.getApplication().invokeLater { whenNoBuildRunning(project, onDeclined, start) }
             }
         }
@@ -710,6 +722,14 @@ object IncredibuildRunner {
         })
         // It may have ended between the check above and adding the listener, which then never fires.
         if (running.isProcessTerminated) retry()
+        AppExecutorUtil.getAppScheduledExecutorService().schedule({
+            if (settled.compareAndSet(false, true)) {
+                ApplicationManager.getApplication().invokeLater {
+                    notifyStopTimedOut(project)
+                    onDeclined()
+                }
+            }
+        }, STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         stopActiveProcess(project)
     }
 
@@ -717,7 +737,8 @@ object IncredibuildRunner {
      * [whenNoBuildRunning] for a build started from a background thread - the IDE's build pipeline
      * (see [IncredibuildProjectTaskRunner]), which reports its own outcome and so must wait here
      * rather than be called back. Blocks until nothing is running and returns true, or returns
-     * false if the user chose not to stop the running build.
+     * false if the user chose not to stop the running build, or it didn't stop within
+     * [STOP_TIMEOUT_MS] - the caller then reports its own build as aborted.
      */
     internal fun awaitNoBuildRunning(project: Project): Boolean {
         while (true) {
@@ -728,8 +749,24 @@ object IncredibuildRunner {
             PostHogClient.capture("stop_build_clicked", mapOf("hadActiveProcess" to true))
             // Graceful where possible - see stopActiveProcess.
             running.destroyProcess()
-            running.waitFor()
+            if (!running.waitFor(STOP_TIMEOUT_MS)) {
+                notifyStopTimedOut(project)
+                return false
+            }
         }
+    }
+
+    /** Tells the user a build waiting for the running one to stop gave up - see [STOP_TIMEOUT_MS]. */
+    private fun notifyStopTimedOut(project: Project) {
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup(NOTIFICATION_GROUP_ID)
+            .createNotification(
+                "Incredibuild",
+                "The running Incredibuild build didn't stop within ${STOP_TIMEOUT_MS / 1000} seconds, so the new " +
+                    "build wasn't started. Stop the running build and try again.",
+                NotificationType.WARNING
+            )
+            .notify(project)
     }
 
     private fun askToStopRunningBuild(project: Project): Boolean =
