@@ -28,6 +28,7 @@ import com.intellij.task.ProjectTaskContext
 import com.intellij.task.ProjectTaskRunner
 import com.intellij.task.TaskRunnerResults
 import com.incredibuild.ibplugin.analytics.PostHogClient
+import com.incredibuild.ibplugin.settings.IncredibuildSettings
 import org.jetbrains.concurrency.AsyncPromise
 import org.jetbrains.concurrency.Promise
 import org.rust.cargo.runconfig.buildtool.CargoBuildAdapter
@@ -81,7 +82,7 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
     override fun canRun(projectTask: ProjectTask): Boolean = false
 
     override fun canRun(project: Project, projectTask: ProjectTask, context: ProjectTaskContext?): Boolean {
-        if (!IdeBuildAcceleration.isEnabled) return false
+        if (!IncredibuildSettings.getInstance().accelerateIdeBuilds) return false
         val cargoRunner = cargoBuildTaskRunner() ?: return false
         return try {
             cargoRunner.canRun(project, projectTask, context)
@@ -117,11 +118,11 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
         tasks: Array<out ProjectTask>,
         promise: AsyncPromise<Result>
     ) {
-        // No dialog here, unlike the explicit menu actions: this path is a standard IDE build
-        // the user did not ask Incredibuild for by name, so it must not block - it builds
-        // normally, with a one-off notification saying why.
-        val installFolder = IdeBuildAcceleration.installFolderOrFallBack(project, BuildFlavor.RUST, CARGO)
+        val installFolder = IncredibuildLocator.findInstallFolder()
         if (installFolder == null) {
+            // No dialog here, unlike the explicit menu actions: this path is a standard IDE
+            // build the user did not ask Incredibuild for, so it must stay silent and simply
+            // build normally.
             delegateToCargo(project, context, tasks, promise)
             return
         }
@@ -254,10 +255,7 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
             resolved.invocation.workingDirectory
         )
         if (prepared !is IncredibuildRunner.PreparedBuild.Ready) {
-            if (prepared is IncredibuildRunner.PreparedBuild.Failed) {
-                LOG.warn(prepared.message)
-                IdeBuildAcceleration.notifyFallback(project, prepared.message, CARGO)
-            }
+            if (prepared is IncredibuildRunner.PreparedBuild.Failed) LOG.warn(prepared.message)
             return null
         }
 
@@ -351,8 +349,5 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
         /** Shown as the build's name and progress text in the Build tool window. */
         private const val BUILD_TASK_NAME = "Build"
         private const val BUILD_PROGRESS_TITLE = "Building with Incredibuild…"
-
-        /** The standard builder a fallback build runs with, as named in the fallback notification. */
-        private const val CARGO = "Cargo"
     }
 }

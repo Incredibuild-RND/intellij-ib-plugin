@@ -65,8 +65,8 @@ object IncredibuildLocator {
      * "10.37.0.12597"), or from `IB_SHORT_VERSION` in `version_info.src` on Linux
      * (e.g. "3.18.0") - or null if unavailable. The two platforms use unrelated
      * version-numbering schemes, so callers must compare against a platform-specific
-     * minimum (see [com.incredibuild.ibplugin.actions.BuildFlavor.minimumVersion]),
-     * never mix them.
+     * minimum (see [com.incredibuild.ibplugin.actions.IncredibuildRunner]'s
+     * `MINIMUM_RUST_BUILD_VERSION`/`MINIMUM_RUST_BUILD_VERSION_LINUX`), never mix them.
      */
     fun findVersion(): String? {
         if (SystemInfo.isLinux) {

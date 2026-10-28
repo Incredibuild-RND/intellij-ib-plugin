@@ -50,13 +50,22 @@ import java.util.concurrent.atomic.AtomicBoolean
 private val BUILD_ID_REGEX = Regex("""Build ID:\s*\{([0-9A-Fa-f-]+)}""")
 
 // Used for both Windows and Linux - same landing page for both.
-internal const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrations/jetbrains-ides"
+private const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrations/jetbrains-ides"
 
-internal const val INCREDIBUILD_DOWNLOAD_PAGE =
+private const val INCREDIBUILD_DOWNLOAD_PAGE =
     "https://docs.incredibuild.com/site-landing/download-docs-center"
 
+private const val MINIMUM_RUST_BUILD_VERSION = "10.37.1"
+
+// The Linux team found an issue with an earlier released Linux Incredibuild
+// version during RustRover integration testing, hence this gate. Deliberately a
+// separate constant, not shared with the Windows one: Windows and Linux
+// Incredibuild use entirely unrelated version-numbering schemes (e.g.
+// "10.37.0.12597" vs "3.18.0").
+private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
+
 /** Declared in plugin.xml. */
-internal const val NOTIFICATION_GROUP_ID = "Incredibuild"
+private const val NOTIFICATION_GROUP_ID = "Incredibuild"
 
 private const val STATUS_POLL_INTERVAL_MS = 250L
 
@@ -94,7 +103,7 @@ object IncredibuildRunner {
             return null
         }
 
-        val minimumVersion = requireNotNull(BuildFlavor.RUST.minimumVersion())
+        val minimumVersion = if (SystemInfo.isLinux) MINIMUM_RUST_BUILD_VERSION_LINUX else MINIMUM_RUST_BUILD_VERSION
         val installedVersion = IncredibuildLocator.findVersion()
         if (installedVersion != null &&
             IncredibuildLocator.compareVersions(installedVersion, minimumVersion) < 0
@@ -847,67 +856,6 @@ object IncredibuildRunner {
         when (val prepared = prepareNativeBuild(project, installFolder, build)) {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
             is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, presentation)
-        }
-    }
-
-    /** How a build started from the IDE's own build pipeline ended - see [launchNativeBuildForIde]. */
-    internal sealed interface IdeBuildOutcome {
-        object Succeeded : IdeBuildOutcome
-        object Failed : IdeBuildOutcome
-        object Stopped : IdeBuildOutcome
-
-        /** Another Incredibuild build was running and the user chose not to stop it (see [whenNoBuildRunning]). */
-        object NotStarted : IdeBuildOutcome
-
-        /** The command couldn't be prepared - the caller should fall back to the IDE's own build. */
-        class NotPrepared(val message: String) : IdeBuildOutcome
-    }
-
-    /**
-     * As [launchNativeBuild], for a build the IDE's own Build/Rebuild started (see
-     * [IdeBuildAcceleration]): the same Incredibuild tool window, status-bar progress and
-     * notification, but with the outcome handed to [onOutcome] - exactly once, on the EDT, or
-     * straight away on the calling thread for [IdeBuildOutcome.NotPrepared] - so the caller can
-     * complete the IDE's build promise. Must be called from a background thread.
-     */
-    internal fun launchNativeBuildForIde(
-        project: Project,
-        installFolder: File,
-        build: NativeBuild,
-        actionType: String,
-        presentation: AcceleratedBuildPresentation,
-        onOutcome: (IdeBuildOutcome) -> Unit
-    ) {
-        val prepared = when (val result = prepareNativeBuild(project, installFolder, build)) {
-            is PreparedBuild.Failed -> return onOutcome(IdeBuildOutcome.NotPrepared(result.message))
-            is PreparedBuild.Ready -> result
-        }
-        ApplicationManager.getApplication().invokeLater {
-            var processHandler: OSProcessHandler? = null
-            run(
-                project,
-                prepared.commandLine,
-                presentation.contentName,
-                presentation.banner,
-                onNotStarted = {
-                    prepared.cleanUp()
-                    onOutcome(IdeBuildOutcome.NotStarted)
-                },
-                onStarted = { started ->
-                    processHandler = started
-                    PostHogClient.capture("ide_build_accelerated", mapOf("action" to actionType))
-                    trackInStatusBar(project, started, presentation)
-                }
-            ) { exitCode ->
-                prepared.cleanUp()
-                onOutcome(
-                    when {
-                        processHandler?.wasStopRequested() == true -> IdeBuildOutcome.Stopped
-                        exitCode == 0 -> IdeBuildOutcome.Succeeded
-                        else -> IdeBuildOutcome.Failed
-                    }
-                )
-            }
         }
     }
 

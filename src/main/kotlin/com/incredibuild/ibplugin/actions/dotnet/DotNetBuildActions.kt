@@ -21,7 +21,6 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 
 /**
@@ -62,6 +61,17 @@ abstract class DotNetBuildWithIncredibuildActionBase internal constructor(
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
+        val entryPoint = RiderSolutionModel.buildEntryPoint(project)
+        val solutionFile = RiderSolutionModel.solutionFile(project)
+        val configuration = RiderSolutionModel.activeConfiguration(project)
+        if (entryPoint == null || solutionFile == null || configuration == null) {
+            Messages.showErrorDialog(
+                project,
+                "Could not determine what to build. Is a solution loaded, with an active configuration selected?",
+                "Incredibuild"
+            )
+            return
+        }
 
         var effectiveKind = kind
         var projectFiles = emptyList<String>()
@@ -82,33 +92,19 @@ abstract class DotNetBuildWithIncredibuildActionBase internal constructor(
             }
         }
 
-        val request = dotNetBuildRequest(project, effectiveKind, projectFiles)
-        if (request == null) {
-            Messages.showErrorDialog(
-                project,
-                "Could not determine what to build. Is a solution loaded, with an active configuration selected?",
-                "Incredibuild"
-            )
-            return
-        }
-        DotNetBuildRunner.build(project, request, actionType)
+        DotNetBuildRunner.build(
+            project,
+            DotNetBuildRequest(
+                effectiveKind,
+                entryPoint,
+                solutionFile,
+                configuration.configuration,
+                configuration.platform,
+                projectFiles
+            ),
+            actionType
+        )
     }
-}
-
-/**
- * What Rider's own build of [kind] would build right now - the open solution (or solution filter)
- * in its active configuration|platform - or null if there is no solution or active configuration.
- * Reads Rider's solution model, so call it on the EDT.
- */
-internal fun dotNetBuildRequest(
-    project: Project,
-    kind: DotNetBuildKind,
-    projectFiles: List<String> = emptyList()
-): DotNetBuildRequest? {
-    val entryPoint = RiderSolutionModel.buildEntryPoint(project) ?: return null
-    val solutionFile = RiderSolutionModel.solutionFile(project) ?: return null
-    val configuration = RiderSolutionModel.activeConfiguration(project) ?: return null
-    return DotNetBuildRequest(kind, entryPoint, solutionFile, configuration.configuration, configuration.platform, projectFiles)
 }
 
 /** The accelerated equivalent of Rider's own Build Solution. */

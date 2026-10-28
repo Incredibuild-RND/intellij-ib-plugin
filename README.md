@@ -24,24 +24,14 @@ configuration, build profile and target selection are all respected.
 
 ### Accelerating the IDE's own build actions
 
-The IDE's build actions can be accelerated too, in RustRover, CLion and Rider. Turn on **Use Incredibuild
-for the IDE's own Build and Rebuild actions** under **Settings/Preferences > Tools > Incredibuild**, and the
-standard Build and Rebuild go through Incredibuild - from the Build menu, the toolbar, keyboard shortcuts,
-and the build that runs before a run configuration starts:
+The IDE's build actions can be accelerated too. Turn on **Accelerate the IDE's own build actions**
+under **Settings/Preferences > Tools > Incredibuild**, and **Build Project** - along with the build
+that runs before **Run** and **Test** - goes through Incredibuild, reporting into the IDE's own
+**Build** tool window. The commands and keyboard shortcuts stay exactly where they are.
 
-- **RustRover** - **Build Project**, **Rebuild Project**, and the build before **Run** and **Test**,
-  reporting into the IDE's own **Build** tool window
-- **CLion** - **Build**, **Rebuild**, **Build Project**, and the build before a CMake run configuration
-  starts, reporting into the **Incredibuild** tool window
-- **Rider** - **Build Solution**, **Rebuild Solution**, **Build Selection**, and the **Build Project** /
-  **Build Solution** before-run steps, reporting into the **Incredibuild** tool window
-
-The commands and keyboard shortcuts stay exactly where they are. The setting is off by default, and while
-it is off those actions behave exactly as they do without this plugin. If Incredibuild is not installed,
-not licensed or too old, the build runs with the IDE's own builder instead and a notification explains why
-(once per project session for each problem). The same settings page shows the Incredibuild installation the
-plugin uses - its folder, version and, on Windows, whether this machine is licensed. The actions in the
-**Incredibuild** menu always use Incredibuild, whichever way the setting is set.
+The setting is off by default. While it is off - or if Incredibuild isn't installed on the machine -
+those actions behave exactly as they do without this plugin. The actions in the **Incredibuild** menu
+always use Incredibuild, whichever way the setting is set.
 
 ### Rider (.NET)
 
