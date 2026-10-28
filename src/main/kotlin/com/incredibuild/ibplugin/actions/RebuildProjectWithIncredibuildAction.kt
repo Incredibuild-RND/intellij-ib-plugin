@@ -20,17 +20,12 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.util.SystemInfo
-import org.rust.cargo.project.settings.RustProjectSettingsService
 import java.io.File
-
-private val CARGO_EXECUTABLE_NAME = if (SystemInfo.isWindows) "cargo.exe" else "cargo"
 
 /**
  * Cleans the whole Cargo workspace (plain "cargo clean", not accelerated -
@@ -97,22 +92,6 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
      * PATH). Prefers the Rust plugin's configured toolchain if present, then
      * falls back to rustup's well-known default install location.
      */
-    private fun resolveCargoExecutable(project: Project): String? {
-        project.service<RustProjectSettingsService>().toolchain?.let { toolchain ->
-            val path = toolchain.pathToCargoExecutable("cargo")
-            if (File(path.toString()).exists()) {
-                return path.toString()
-            }
-        }
-
-        val defaultCargo = File(System.getProperty("user.home"), ".cargo${File.separator}bin${File.separator}$CARGO_EXECUTABLE_NAME")
-        if (defaultCargo.exists()) {
-            return defaultCargo.absolutePath
-        }
-
-        return null
-    }
-
     private fun startClean(
         project: Project,
         installFolder: File,
@@ -130,7 +109,8 @@ class RebuildProjectWithIncredibuildAction : AnAction() {
                 installFolder,
                 invocation.command,
                 invocation.workingDirectory,
-                "rebuild"
+                "rebuild",
+                cargoBinDir = invocation.cargoBinDir
             )
         }
     }

@@ -1,0 +1,95 @@
+# Builds the Windows installers (installer/build-installer.ps1): the self-contained
+# install-intellij-ib-plugin.ps1 and the intellij-ib-plugin.exe self-extracting installer.
+# Windows-only: the .exe needs csc.exe and 7-Zip, and the standalone script is run with Windows
+# PowerShell, which is also what assembles it here (see installer/README.md).
+#
+# - Called by the Release workflow with the release's tag: packages the exact plugin zip that
+#   release published and attaches both installers to it.
+# - Run by hand (Actions > Installers > Run workflow) to try it out before a release:
+#   - with no tag, it builds the plugin from the selected branch and only uploads the installers
+#     as a workflow artifact - no release is touched;
+#   - with an existing release's tag, it does exactly what the Release workflow does for that
+#     release, e.g. to re-attach installers after a failed run.
+#   (GitHub only offers "Run workflow" once this file is on the default branch.)
+# - On pull requests that change the installers, the same as a manual run without a tag - so a
+#   change to them is exercised before it ever reaches a release.
+
+name: Installers
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag whose plugin zip to package, and to attach the installers to.
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - installer/**
+      - .github/workflows/installers.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to package and attach to. Leave empty to build from this branch and upload a workflow artifact only.
+        required: false
+        type: string
+
+jobs:
+  installers:
+    name: Build Installers
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+
+      # Check out the release's tag, or the branch the workflow was run from
+      - name: Fetch Sources
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      # Only needed to build the plugin from source (no tag)
+      - name: Setup Java
+        if: ${{ !inputs.tag }}
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - name: Setup Gradle
+        if: ${{ !inputs.tag }}
+        uses: gradle/actions/setup-gradle@v6.2.0
+        with:
+          cache-read-only: true
+
+      # The zip the release's "Upload Release Asset" step attached, not a fresh build
+      - name: Download Published Plugin
+        if: ${{ inputs.tag }}
+        shell: powershell
+        run: gh release download "$env:TAG" --repo "${{ github.repository }}" --pattern intellij-ib-plugin.zip --dir build/published
+
+      - name: Build Installers
+        shell: powershell
+        run: |
+          if ($env:TAG) {
+              .\installer\build-installer.ps1 -PluginZip build\published\intellij-ib-plugin.zip
+          } else {
+              # Runs gradlew buildPlugin itself first
+              .\installer\build-installer.ps1
+          }
+
+      - name: Upload Installers to Release
+        if: ${{ inputs.tag }}
+        shell: powershell
+        run: gh release upload "$env:TAG" --repo "${{ github.repository }}" --clobber build/distributions/install-intellij-ib-plugin.ps1 build/distributions/intellij-ib-plugin.exe
+
+      # Always kept as an artifact too, so a manual run's output can be downloaded and tried
+      - name: Upload Installers Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: installers
+          path: |
+            build/distributions/install-intellij-ib-plugin.ps1
+            build/distributions/intellij-ib-plugin.exe

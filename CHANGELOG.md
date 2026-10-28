@@ -4,6 +4,38 @@
 
 ## [Unreleased]
 
+## [1.1.0]
+
+### Added
+
+- CLion support for CMake projects: **Build**, **Rebuild** and **Build All** in the **Incredibuild** menu run
+  `cmake --build` through Incredibuild, against the build directory, toolchain and generator the active CMake profile
+  is already configured with.
+- Rider support for .NET solutions: **Build Solution with Incredibuild**, **Rebuild Solution with Incredibuild** and
+  **Build Selected Projects with Incredibuild** in the **Build** menu, the Solution Explorer context menu and the
+  **Incredibuild** menu, bindable to shortcuts in **Settings/Preferences > Keymap**. They build the solution as it is
+  configured, in its active configuration and platform, through MSBuild accelerated by Incredibuild. While one runs,
+  the status bar shows the accelerated build in progress, and a notification reports the result.
+- **Settings/Preferences > Tools > Incredibuild** can set the MSBuild that Rider builds use, when the automatically
+  detected one isn't the right one.
+- The installers now also install the plugin into CLion and Rider.
+
+### Changed
+
+- Only one Incredibuild build runs at a time, in every IDE. Starting a build - from the **Incredibuild** menu or,
+  with IDE build acceleration on, from the IDE's own build actions - while another is still running offers to stop
+  the running one, then starts the new build as soon as it has stopped. Previously a second build started alongside
+  the first, replacing its output in the **Incredibuild** tool window.
+- The Windows installers (`install-intellij-ib-plugin.ps1` and `intellij-ib-plugin.exe`) are now attached to each
+  GitHub release, built by the release workflow from the published plugin, instead of the script being committed to
+  the repository.
+
+### Fixed
+
+- With **Accelerate the IDE's own build actions** on, **Build Project** in RustRover 2026.1 (and IntelliJ IDEA / CLion
+  2026.1 with the Rust plugin) failed with `NoSuchMethodError` instead of building, because it relied on a Rust plugin
+  API that only exists from 2026.2. The plugin is now verified against both 2026.1 and 2026.2 of every supported IDE.
+
 ## [1.0.3]
 
 ### Added

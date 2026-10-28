@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-Builds both distributable installers from the current build/distributions/intellij-ib-plugin.zip:
-  - scripts/install-intellij-ib-plugin.ps1 (self-contained, base64-embedded script)
+Builds both distributable installers from the plugin zip:
+  - build/distributions/install-intellij-ib-plugin.ps1 (self-contained, base64-embedded script)
   - build/distributions/intellij-ib-plugin.exe (self-extracting installer, zero visible windows)
 
 .DESCRIPTION
@@ -9,44 +9,67 @@ Just run this script - it runs `.\gradlew buildPlugin` itself first, so
 build/distributions/intellij-ib-plugin.zip is always current:
     powershell -ExecutionPolicy Bypass -File .\installer\build-installer.ps1
 
+Neither output is committed: the release workflow (.github/workflows/release.yml) runs this
+with -PluginZip pointing at the zip it just published, so the installers attached to a GitHub
+release always carry exactly that build.
+
+.PARAMETER PluginZip
+An already-built plugin zip to package, instead of running `gradlew buildPlugin`.
+
 Both generated scripts share the IDE-detection/validation logic in
 install-common.ps1 (edit that ONE file for both, rather than either generated
 script directly - regenerate by re-running this script). See installer/README.md
 for the full pipeline explanation and prerequisites.
 #>
 
+param(
+    [string]$PluginZip
+)
+
 $ErrorActionPreference = "Stop"
 
 $installerDir = $PSScriptRoot
 $repoRoot = Split-Path -Parent $installerDir
-$pluginZip = Join-Path $repoRoot "build\distributions\intellij-ib-plugin.zip"
-$standaloneScriptOut = Join-Path $repoRoot "scripts\install-intellij-ib-plugin.ps1"
-$exeOut = Join-Path $repoRoot "build\distributions\intellij-ib-plugin.exe"
+$outDir = Join-Path $repoRoot "build\distributions"
+$standaloneScriptOut = Join-Path $outDir "install-intellij-ib-plugin.ps1"
+$exeOut = Join-Path $outDir "intellij-ib-plugin.exe"
 
 # --- 0. Rebuild the plugin so the zip can never be stale -------------------
 
-$gradlew = Join-Path $repoRoot "gradlew.bat"
-if (-not (Test-Path $gradlew)) {
-    Write-Error "$gradlew not found - expected at the repo root."
-    exit 1
-}
-
-Write-Host "Running '.\gradlew.bat buildPlugin' ..."
-Push-Location $repoRoot
-try {
-    & $gradlew buildPlugin --console=plain
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "gradlew buildPlugin failed (exit $LASTEXITCODE)."
+if ($PluginZip) {
+    if (-not (Test-Path $PluginZip)) {
+        Write-Error "$PluginZip not found."
         exit 1
     }
-} finally {
-    Pop-Location
+    $pluginZip = (Resolve-Path $PluginZip).Path
+} else {
+    $pluginZip = Join-Path $outDir "intellij-ib-plugin.zip"
+
+    $gradlew = Join-Path $repoRoot "gradlew.bat"
+    if (-not (Test-Path $gradlew)) {
+        Write-Error "$gradlew not found - expected at the repo root."
+        exit 1
+    }
+
+    Write-Host "Running '.\gradlew.bat buildPlugin' ..."
+    Push-Location $repoRoot
+    try {
+        & $gradlew buildPlugin --console=plain
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "gradlew buildPlugin failed (exit $LASTEXITCODE)."
+            exit 1
+        }
+    } finally {
+        Pop-Location
+    }
+
+    if (-not (Test-Path $pluginZip)) {
+        Write-Error "$pluginZip still not found after 'gradlew buildPlugin' - check the buildPlugin task's output archive name/path."
+        exit 1
+    }
 }
 
-if (-not (Test-Path $pluginZip)) {
-    Write-Error "$pluginZip still not found after 'gradlew buildPlugin' - check the buildPlugin task's output archive name/path."
-    exit 1
-}
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
 # --- Locate prerequisites ---------------------------------------------------
 
@@ -86,7 +109,7 @@ try {
         exit 1
     }
 
-    # --- 2. Assemble scripts/install-intellij-ib-plugin.ps1 (standalone) ---
+    # --- 2. Assemble install-intellij-ib-plugin.ps1 (standalone) -----------
 
     Write-Host "Assembling $standaloneScriptOut ..."
     $pluginZipBase64 = [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes($pluginZip))

@@ -98,3 +98,15 @@ jobs:
             --body "Current pull request contains patched \`CHANGELOG.md\` file for the \`$VERSION\` version." \
             --label "$LABEL" \
             --head $BRANCH
+
+  # Build the Windows installers from the exact plugin zip the job above just published, and attach
+  # them to the same release - so they're reproducible from CI rather than built locally and
+  # committed. Its own workflow so it can also be run by hand - see installers.yml.
+  installers:
+    name: Build Installers
+    needs: [ release ]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/installers.yml
+    with:
+      tag: ${{ github.event.release.tag_name }}

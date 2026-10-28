@@ -1,0 +1,50 @@
+<!-- Loaded only in Rider (com.intellij.modules.rider - see plugin.xml's optional <depends>) - the
+     .NET/MSBuild-flavoured half of this plugin's Incredibuild integration. Its actions read
+     Rider's solution model through the Rider-only adapter module (rider/, merged into this
+     plugin's jar), then run MSBuild through Incredibuild - see actions/dotnet/. -->
+<idea-plugin>
+    <actions>
+        <!-- Full "... with Incredibuild" names, unlike the Rust/CMake halves' plain
+             "Build"/"Rebuild": these also sit in Rider's own Build menu and Solution Explorer
+             context menu, right next to the standard actions they accelerate, where a bare
+             "Build Solution" would be indistinguishable from Rider's own.
+
+             No default keyboard shortcuts, so as not to take over any of Rider's own keymaps;
+             each one can be bound in Settings | Keymap (search "Incredibuild"). -->
+        <group id="Incredibuild.DotNet.BuildActions">
+            <action id="Incredibuild.DotNet.BuildSolution"
+                    class="com.incredibuild.ibplugin.actions.dotnet.BuildSolutionWithIncredibuildAction"
+                    text="Build Solution with Incredibuild"
+                    description="Build the whole solution in its active configuration, accelerated by Incredibuild"
+                    icon="/icons/incredibuild.svg"/>
+            <action id="Incredibuild.DotNet.RebuildSolution"
+                    class="com.incredibuild.ibplugin.actions.dotnet.RebuildSolutionWithIncredibuildAction"
+                    text="Rebuild Solution with Incredibuild"
+                    description="Clean and rebuild the whole solution in its active configuration, accelerated by Incredibuild"
+                    icon="/icons/incredibuild.svg"/>
+            <action id="Incredibuild.DotNet.BuildSelectedProjects"
+                    class="com.incredibuild.ibplugin.actions.dotnet.BuildSelectedProjectsWithIncredibuildAction"
+                    text="Build Selected Projects with Incredibuild"
+                    description="Build the projects selected in the Solution Explorer (and the projects they reference), accelerated by Incredibuild"
+                    icon="/icons/incredibuild.svg"/>
+
+            <!-- Rider's own Build menu: right after Build/Rebuild/Clean Solution. -->
+            <add-to-group group-id="build" anchor="after" relative-to-action="CleanSolutionAction"/>
+            <!-- The Incredibuild menu (plugin.xml), above its Stop Build like the Rust/CMake
+                 actions - so accelerated builds are all in one place in every IDE. -->
+            <add-to-group group-id="Incredibuild.Menu" anchor="first"/>
+        </group>
+
+        <!-- The Solution Explorer context menu, right after Rider's own Build Selection. A
+             separate group from the one above only so it can carry separators of its own,
+             setting it apart from the neighbouring run/test entries. -->
+        <group id="Incredibuild.DotNet.ContextMenu">
+            <separator/>
+            <reference ref="Incredibuild.DotNet.BuildSolution"/>
+            <reference ref="Incredibuild.DotNet.RebuildSolution"/>
+            <reference ref="Incredibuild.DotNet.BuildSelectedProjects"/>
+            <separator/>
+            <add-to-group group-id="SolutionExplorerPopupMenu" anchor="after" relative-to-action="BuildSelection"/>
+        </group>
+    </actions>
+</idea-plugin>
