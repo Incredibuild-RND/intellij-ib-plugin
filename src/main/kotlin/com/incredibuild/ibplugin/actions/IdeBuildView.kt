@@ -142,8 +142,11 @@ internal class IdeBuildView(
                 val kind = if (parsed.isError) MessageEvent.Kind.ERROR else MessageEvent.Kind.WARNING
                 val path = parsed.file?.let(::resolve)
                 if (path != null && parsed.line != null) {
-                    // FilePosition is 0-based; compilers print 1-based positions.
-                    val position = FilePosition(path, parsed.line - 1, (parsed.column ?: 1) - 1)
+                    // FilePosition is 0-based; compilers print 1-based positions. The File
+                    // constructor, deprecated in 2026.2, because the Path one it was deprecated in
+                    // favour of doesn't exist in 2026.1 - the Plugin Verifier caught it there.
+                    @Suppress("DEPRECATION")
+                    val position = FilePosition(path.toFile(), parsed.line - 1, (parsed.column ?: 1) - 1)
                     progress.fileMessage(parsed.message, line, kind, position)
                 } else {
                     progress.message(parsed.message, line, kind, null)
