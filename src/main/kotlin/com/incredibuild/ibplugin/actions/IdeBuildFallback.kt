@@ -23,14 +23,22 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Key
 
 /**
  * Tells the user that one of the IDE's own build actions - routed through Incredibuild by
  * Settings | Tools | Incredibuild - ran as a standard local build instead, and why. Never a
  * dialog: the build itself carries on (the caller hands it back to the IDE's own builder), so
  * this mustn't stand in its way, only explain it.
+ *
+ * Once per reason per project session: whatever kept one build from being accelerated (no
+ * Incredibuild, a remote toolchain) usually keeps every one after it from being accelerated too,
+ * and every Build, Run and Test saying so again would only be noise.
  */
 internal object IdeBuildFallback {
+
+    /** The reasons already shown in a project. */
+    private val SHOWN_REASONS = Key.create<MutableSet<String>>("Incredibuild.IdeBuildFallback.shownReasons")
 
     /** For an installation [IncredibuildInstallation.check] found unusable. */
     fun notify(project: Project, status: IncredibuildStatus) {
@@ -51,6 +59,7 @@ internal object IdeBuildFallback {
 
     private fun show(project: Project, reason: String, analyticsReason: String, offerDownload: Boolean) {
         PostHogClient.capture("ide_build_fallback", mapOf("reason" to analyticsReason))
+        if (!isFirstTime(project, reason)) return
         val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup(NOTIFICATION_GROUP_ID)
             .createNotification(
@@ -68,5 +77,10 @@ internal object IdeBuildFallback {
             ShowSettingsUtil.getInstance().showSettingsDialog(project, IncredibuildConfigurable::class.java)
         })
         notification.notify(project)
+    }
+
+    private fun isFirstTime(project: Project, reason: String): Boolean = synchronized(this) {
+        val shown = project.getUserData(SHOWN_REASONS) ?: mutableSetOf<String>().also { project.putUserData(SHOWN_REASONS, it) }
+        shown.add(reason)
     }
 }

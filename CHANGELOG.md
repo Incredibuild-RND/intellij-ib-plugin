@@ -24,7 +24,8 @@
 
 - With **Accelerate the IDE's own build actions** on, a build that can't go through Incredibuild - not installed, not
   licensed, an unsupported version - now falls back to a standard local build with a notification saying why, in
-  every IDE. In RustRover it used to fall back silently, and didn't check the version or licence at all.
+  every IDE (once per reason per project session, not on every build). In RustRover it used to fall back silently,
+  and didn't check the version or licence at all.
 
 ## [1.1.0]
 

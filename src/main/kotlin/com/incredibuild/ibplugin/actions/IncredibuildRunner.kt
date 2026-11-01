@@ -83,6 +83,13 @@ object IncredibuildRunner {
     @Volatile
     private var activeProcessHandler: OSProcessHandler? = null
 
+    /**
+     * Held while checking that no build is running and registering a new one as [activeProcessHandler],
+     * so that builds started from different threads - the EDT's ([whenNoBuildRunning]) and the
+     * IDE build pipeline's ([startWhenNoBuildRunning]) - can't both find nothing running.
+     */
+    private val buildStartLock = Any()
+
     /** The Incredibuild build-id of [activeProcessHandler], parsed from its own stdout, if any. */
     @Volatile
     private var activeBuildId: String? = null
@@ -727,11 +734,9 @@ object IncredibuildRunner {
      * background thread wait with [awaitNoBuildRunning] instead.
      */
     private fun whenNoBuildRunning(project: Project, onDeclined: () -> Unit, start: () -> Unit) {
-        val running = activeProcessHandler?.takeUnless { it.isProcessTerminated }
-        if (running == null) {
-            start()
-            return
-        }
+        val running = synchronized(buildStartLock) {
+            activeProcessHandler?.takeUnless { it.isProcessTerminated }.also { if (it == null) start() }
+        } ?: return
         if (!askToStopRunningBuild(project)) {
             onDeclined()
             return
@@ -779,6 +784,21 @@ object IncredibuildRunner {
                 notifyStopTimedOut(project)
                 return false
             }
+        }
+    }
+
+    /**
+     * [awaitNoBuildRunning], then [create] - registering the new build as the active one (see
+     * [createProcessHandler]) - with no gap between finding nothing running and doing so, in which
+     * another build could start. Null if the user chose not to stop the running build, or it
+     * didn't stop in time. Blocking: never call it on the EDT.
+     */
+    private fun startWhenNoBuildRunning(project: Project, create: () -> OSProcessHandler): OSProcessHandler? {
+        while (true) {
+            synchronized(buildStartLock) {
+                if (activeProcessHandler?.takeUnless { it.isProcessTerminated } == null) return create()
+            }
+            if (!awaitNoBuildRunning(project)) return null
         }
     }
 
@@ -959,26 +979,38 @@ object IncredibuildRunner {
             is PreparedBuild.Ready -> result
         }
         // One Incredibuild build at a time, as for the Incredibuild menu's builds - asked here,
-        // where blocking is fine (see awaitNoBuildRunning).
-        if (!awaitNoBuildRunning(project)) {
+        // where blocking is fine (see awaitNoBuildRunning). decodeAnsiColors = false: the Build
+        // tool window colours output by reading the escape codes from the text itself - see
+        // RawIncredibuildProcessHandler.
+        val processHandler = try {
+            startWhenNoBuildRunning(project) { createProcessHandler(prepared.commandLine, decodeAnsiColors = false) }
+        } catch (e: Exception) {
+            prepared.cleanUp()
+            throw e
+        }
+        if (processHandler == null) {
             prepared.cleanUp()
             return IdeBuildOutcome.NotStarted
         }
-
-        // decodeAnsiColors = false: the Build tool window colours output by reading the escape
-        // codes from the text itself - see RawIncredibuildProcessHandler.
-        val processHandler = createProcessHandler(prepared.commandLine, decodeAnsiColors = false)
-        processHandler.addProcessListener(object : ProcessListener {
-            override fun processTerminated(event: ProcessEvent) = prepared.cleanUp()
-        })
-        IdeBuildView(
-            project,
-            "${presentation.contentName} with Incredibuild",
-            build.workingDirectory,
-            (outputBaseDirectories + build.workingDirectory).distinct(),
-            processHandler
-        ).start(presentation.banner)
-        trackInStatusBar(project, processHandler, presentation, notifyResult = false)
+        try {
+            processHandler.addProcessListener(object : ProcessListener {
+                override fun processTerminated(event: ProcessEvent) = prepared.cleanUp()
+            })
+            IdeBuildView(
+                project,
+                "${presentation.contentName} with Incredibuild",
+                build.workingDirectory,
+                (outputBaseDirectories + build.workingDirectory).distinct(),
+                processHandler
+            ).start(presentation.banner)
+            trackInStatusBar(project, processHandler, presentation, notifyResult = false)
+        } catch (e: Exception) {
+            // The process is already running (OSProcessHandler starts it), but nothing would
+            // report or stop it now - so it's ended here, and its files cleaned up with it.
+            processHandler.destroyProcess()
+            processHandler.startNotify()
+            throw e
+        }
 
         PostHogClient.capture("build_started", mapOf("action" to actionType))
         PostHogClient.captureOnce(

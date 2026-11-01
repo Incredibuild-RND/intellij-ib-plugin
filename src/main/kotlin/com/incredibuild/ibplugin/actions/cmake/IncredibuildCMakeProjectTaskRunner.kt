@@ -24,8 +24,11 @@ import com.incredibuild.ibplugin.actions.IncredibuildRunner.IdeBuildOutcome
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeBuild
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.NativeCommand
 import com.incredibuild.ibplugin.actions.IncredibuildStatus
+import com.incredibuild.ibplugin.actions.NOTIFICATION_GROUP_ID
 import com.incredibuild.ibplugin.analytics.PostHogClient
 import com.incredibuild.ibplugin.settings.IncredibuildSettings
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
@@ -151,7 +154,8 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
 
         // Sequentially, waiting for each: a task normally expands to a single build, and where
         // it doesn't they mustn't overlap - only one Incredibuild build runs at a time.
-        for ((plan, resolved) in builds) {
+        for ((index, build) in builds.withIndex()) {
+            val (plan, resolved) = build
             PostHogClient.capture("ide_build_accelerated", mapOf("action" to "ide_build_cmake"))
             val outcome = IncredibuildRunner.runNativeBuildAndWait(
                 project,
@@ -166,7 +170,17 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
                 outputBaseDirectories = listOf(resolved.buildDirectory)
             )
             when (outcome) {
-                is IdeBuildOutcome.NotPrepared -> return fallBack(outcome.message)
+                // Handing back to CLion is only right while nothing has been built yet: after
+                // that it would build everything again, so the rest fails instead.
+                is IdeBuildOutcome.NotPrepared -> return if (index == 0) {
+                    fallBack(outcome.message)
+                } else {
+                    NotificationGroupManager.getInstance()
+                        .getNotificationGroup(NOTIFICATION_GROUP_ID)
+                        .createNotification("Incredibuild", outcome.message, NotificationType.ERROR)
+                        .notify(project)
+                    promise.setResult(TaskRunnerResults.FAILURE)
+                }
                 IdeBuildOutcome.NotStarted -> return promise.setResult(TaskRunnerResults.ABORTED)
                 is IdeBuildOutcome.Finished -> when {
                     outcome.stopped -> return promise.setResult(TaskRunnerResults.ABORTED)

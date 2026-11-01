@@ -106,6 +106,14 @@ class CompilerOutputParserTest {
     }
 
     @Test
+    fun `an MSVC command line warning is a warning`() {
+        val parsed = diagnostic("cl : Command line warning D9002: ignoring unknown option '/foo'")
+        assertEquals(false, parsed.isError)
+        assertNull(parsed.file)
+        assertEquals("D9002: ignoring unknown option '/foo'", parsed.message)
+    }
+
+    @Test
     fun `a GCC-style tool error names the tool`() {
         val parsed = diagnostic("clang: error: linker command failed with exit code 1 (use -v to see invocation)")
         assertNull(parsed.file)
@@ -134,6 +142,16 @@ class CompilerOutputParserTest {
             BuildOutputLine.Progress("Built MyLib"),
             CompilerOutputParser.parse("""  MyLib -> C:\src\MyLib\bin\Debug\net8.0\MyLib.dll""")
         )
+        assertEquals(
+            BuildOutputLine.Progress("Built MyLib"),
+            CompilerOutputParser.parse("""2>MyLib -> /home/me/src/MyLib/bin/Debug/net8.0/MyLib.dll""")
+        )
+    }
+
+    @Test
+    fun `an arrow that isn't followed by an absolute path is not progress`() {
+        assertNull(CompilerOutputParser.parse("-- Mapping a -> b"))
+        assertNull(CompilerOutputParser.parse("  renaming foo -> bar"))
     }
 
     @Test

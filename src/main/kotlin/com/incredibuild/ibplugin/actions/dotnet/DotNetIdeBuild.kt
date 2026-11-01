@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.actions.dotnet
 
+import com.incredibuild.ibplugin.actions.IdeBuildFallback
 import com.incredibuild.ibplugin.actions.dotnet.DotNetBuildRunner.IdeBuildCheck
 import com.incredibuild.ibplugin.rider.RiderBeforeRunBuild
 import com.incredibuild.ibplugin.rider.RiderBuildHooks
@@ -25,12 +26,15 @@ import com.intellij.execution.BeforeRunTask
 import com.intellij.execution.BeforeRunTaskProvider
 import com.intellij.execution.configurations.RunConfiguration
 import com.intellij.execution.runners.ExecutionEnvironment
+import com.intellij.openapi.actionSystem.ActionUiKind
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.AnActionWrapper
 import com.intellij.openapi.actionSystem.DataContext
+import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.ThrowableComputable
@@ -71,16 +75,42 @@ abstract class RiderBuildActionOverride internal constructor(
             ?: return super.actionPerformed(e)
 
         // Under a modal progress, because what's found decides whether Rider's own action runs
-        // instead - which has to happen here, with this event. Both lookups are cached, so it's
-        // only ever slow (and only then shown) the first time.
-        val check = ProgressManager.getInstance().runProcessWithProgressSynchronously(
-            ThrowableComputable<IdeBuildCheck, RuntimeException> { DotNetBuildRunner.checkIdeBuild(project) },
-            "Checking Incredibuild",
-            false,
-            project
-        )
+        // instead - which has to happen here, with this event. The installation and MSBuild
+        // lookups are cached (and the installation checked when the project opens - see
+        // IncredibuildInstallationWarmUp), so it's rarely slow. Cancellable all the same: the
+        // licence query can take a while, and cancelling it just builds the way Rider does.
+        val check = try {
+            ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                ThrowableComputable<IdeBuildCheck, RuntimeException> { DotNetBuildRunner.checkIdeBuild(project, request) },
+                "Checking Incredibuild",
+                true,
+                project
+            )
+        } catch (_: ProcessCanceledException) {
+            IdeBuildCheck.FallBack
+        }
         when (check) {
-            is IdeBuildCheck.Ready -> DotNetBuildRunner.buildForIde(project, request, check)
+            is IdeBuildCheck.Ready -> {
+                // Kept for falling back later, on another thread, once this event has been handled.
+                val dataContext = e.dataContext
+                val place = e.place
+                DotNetBuildRunner.buildForIde(project, request, check) { reason ->
+                    IdeBuildFallback.notify(project, reason)
+                    ApplicationManager.getApplication().invokeLater(
+                        {
+                            val event = AnActionEvent.createEvent(
+                                dataContext,
+                                delegate.templatePresentation.clone(),
+                                place,
+                                ActionUiKind.NONE,
+                                null
+                            )
+                            ActionUtil.performAction(delegate, event)
+                        },
+                        project.disposed
+                    )
+                }
+            }
             IdeBuildCheck.FallBack -> super.actionPerformed(e)
         }
     }

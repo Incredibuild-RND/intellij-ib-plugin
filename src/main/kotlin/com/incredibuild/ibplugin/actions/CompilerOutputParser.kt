@@ -58,9 +58,11 @@ internal object CompilerOutputParser {
         """^(?<loc>(?<file>(?:[A-Za-z]:)?[^:<>|"*?\s][^:<>|"*?]*?):(?<line>\d+)(?::(?<col>\d+))?):\s*$KIND:\s*(?<msg>.*)$"""
     )
 
-    /** MSVC/MSBuild without a file: `LINK : fatal error LNK1104: ...`, `MSBUILD : error MSB1009: ...`. */
+    /** MSVC/MSBuild without a file: `LINK : fatal error LNK1104: ...`, `MSBUILD : error MSB1009: ...`,
+     * `cl : Command line warning D9002: ...`. */
     private val MSVC_UNLOCATED = Regex(
-        """^\s*(?:\d+>)?\s*(?:[^:\s][^:]*?\s*:\s*)?$KIND\s+(?<code>[A-Za-z]+\d+)\s*:\s*(?<msg>.*?)(?:\s+\[[^\]]+])?\s*$"""
+        """^\s*(?:\d+>)?\s*(?:[^:\s][^:]*?\s*:\s*)?(?:Command line\s+)?$KIND\s+(?<code>[A-Za-z]+\d+)\s*:\s*""" +
+            """(?<msg>.*?)(?:\s+\[[^\]]+])?\s*$"""
     )
 
     /** A GCC-style tool without a file: `clang: error: linker command failed ...`, `ld: error: ...`. */
@@ -72,8 +74,11 @@ internal object CompilerOutputParser {
     /** Make: `[ 45%] Building CXX object ...`. */
     private val MAKE_PROGRESS = Regex("""^\[\s*(\d+)%]\s+(.*)$""")
 
-    /** MSBuild, as each project finishes: `  MyLib -> C:\src\MyLib\bin\Debug\MyLib.dll`. */
-    private val MSBUILD_PROJECT_BUILT = Regex("""^\s*(?:\d+>)?\s*(?<project>[^\s>][^>]*?) -> (?<output>\S.*)$""")
+    /** MSBuild, as each project finishes: `  MyLib -> C:\src\MyLib\bin\Debug\MyLib.dll`. The output
+     * has to be an absolute path, which MSBuild always prints - so any other line that happens to
+     * contain an arrow isn't taken for one. */
+    private val MSBUILD_PROJECT_BUILT =
+        Regex("""^\s*(?:\d+>)?\s*(?<project>[^\s>][^>]*?) -> (?<output>(?:[A-Za-z]:[\\/]|/)\S.*)$""")
 
     private val ANSI_ESCAPE = Regex("""\u001B\[[0-9;?]*[ -/]*[@-~]""")
 

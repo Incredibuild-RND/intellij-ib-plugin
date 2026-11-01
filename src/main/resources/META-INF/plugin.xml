@@ -40,6 +40,7 @@
                     icon="/icons/incredibuild.svg"
                     factoryClass="com.incredibuild.ibplugin.actions.IncredibuildToolWindowFactory"/>
         <postStartupActivity implementation="com.incredibuild.ibplugin.analytics.AnalyticsStartupActivity"/>
+        <postStartupActivity implementation="com.incredibuild.ibplugin.actions.IncredibuildInstallationWarmUp"/>
         <applicationConfigurable
                 parentId="tools"
                 instance="com.incredibuild.ibplugin.settings.IncredibuildConfigurable"

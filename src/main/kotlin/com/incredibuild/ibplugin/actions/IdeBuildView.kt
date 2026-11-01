@@ -132,8 +132,10 @@ internal class IdeBuildView(
         }
     }
 
-    private fun report(line: String) {
-        when (val parsed = CompilerOutputParser.parse(CompilerOutputParser.stripAnsi(line))) {
+    private fun report(rawLine: String) {
+        // Stripped for the tree entries' details too, which show text as-is, escape codes and all.
+        val line = CompilerOutputParser.stripAnsi(rawLine)
+        when (val parsed = CompilerOutputParser.parse(line)) {
             is BuildOutputLine.Diagnostic -> {
                 synchronized(reported) {
                     if (!reported.add(parsed.copy(locationRange = null))) return

@@ -74,29 +74,31 @@ internal object DotNetBuildRunner {
      * them through Incredibuild - with [check] already done by [checkIdeBuild], so there's nothing
      * left to ask the user about. Reports into the Build tool window, like the before-launch build
      * ([buildForIdeAndWait]) and like Rider's own build. Call it on the EDT, as actions run.
+     *
+     * [fallBack] is called, on a background thread, if the build can't be started after all
+     * (its wrapper script couldn't be written, say), with the reason - to have Rider build it.
      */
-    fun buildForIde(project: Project, request: DotNetBuildRequest, check: IdeBuildCheck.Ready) {
+    fun buildForIde(
+        project: Project,
+        request: DotNetBuildRequest,
+        check: IdeBuildCheck.Ready,
+        fallBack: (reason: String) -> Unit
+    ) {
         FileDocumentManager.getInstance().saveAllDocuments()
         ApplicationManager.getApplication().executeOnPooledThread {
             when (val outcome = runForIde(project, request, check)) {
-                // Too late to hand back to Rider's own action (its event is long gone), so it's
-                // reported like the Incredibuild menu's own build would report it.
-                is IdeBuildOutcome.NotPrepared -> showError(project, outcome.message)
+                is IdeBuildOutcome.NotPrepared -> fallBack(outcome.message)
                 else -> Unit
             }
         }
     }
 
     private fun runForIde(project: Project, request: DotNetBuildRequest, check: IdeBuildCheck.Ready): IdeBuildOutcome {
-        val build = when (val plan = plan(request, check.tool)) {
-            is DotNetBuildPlan.Failed -> return IdeBuildOutcome.NotPrepared(plan.message)
-            is DotNetBuildPlan.Ready -> plan.build
-        }
         PostHogClient.capture("ide_build_accelerated", mapOf("action" to IDE_ACTION_TYPE))
         return IncredibuildRunner.runNativeBuildAndWait(
             project,
             check.installFolder,
-            build,
+            check.build,
             IDE_ACTION_TYPE,
             presentation(request, check.tool),
             outputBaseDirectories = listOf(File(request.solutionFile).absoluteFile.parent)
@@ -133,26 +135,37 @@ internal object DotNetBuildRunner {
 
     /** What an IDE build found when [checkIdeBuild] checked whether it can be accelerated. */
     sealed interface IdeBuildCheck {
-        class Ready(val installFolder: File, val tool: MsBuildTool) : IdeBuildCheck
+        /** It can, by running [build]. */
+        class Ready(val installFolder: File, val tool: MsBuildTool, val build: IncredibuildRunner.NativeBuild) :
+            IdeBuildCheck
 
         /** It can't - [IdeBuildFallback] has already told the user why, and Rider builds it instead. */
         data object FallBack : IdeBuildCheck
     }
 
     /**
-     * Whether one of Rider's own builds can go through Incredibuild: Incredibuild usable, and an
-     * MSBuild to run. If not, says why (a notification, never a dialog - the build still goes
-     * ahead, as Rider's own). Blocking: never call it on the EDT.
+     * Whether one of Rider's own builds of [request] can go through Incredibuild: Incredibuild
+     * usable, an MSBuild to run, and an MSBuild invocation for it - everything that can be known
+     * before the build, so that whatever stands in the way is found while Rider can still build it
+     * instead. If something does, says why (a notification, never a dialog - the build still goes
+     * ahead, as Rider's own). Blocking: never call it on the EDT. Under a progress indicator,
+     * cancelling it throws [com.intellij.openapi.progress.ProcessCanceledException].
      */
-    fun checkIdeBuild(project: Project): IdeBuildCheck {
+    fun checkIdeBuild(project: Project, request: DotNetBuildRequest): IdeBuildCheck {
         val status = IncredibuildInstallation.check(AcceleratedBuildTool.NATIVE)
         if (status !is IncredibuildStatus.Ready) {
             IdeBuildFallback.notify(project, status)
             return IdeBuildCheck.FallBack
         }
-        return when (val location = MsBuildLocator.locate()) {
-            is MsBuildLocation.NotFound -> IdeBuildCheck.FallBack.also { IdeBuildFallback.notify(project, location.reason) }
-            is MsBuildLocation.Found -> IdeBuildCheck.Ready(status.installFolder, location.tool)
+        ProgressManager.checkCanceled()
+        val tool = when (val location = MsBuildLocator.locate()) {
+            is MsBuildLocation.NotFound -> return IdeBuildCheck.FallBack.also { IdeBuildFallback.notify(project, location.reason) }
+            is MsBuildLocation.Found -> location.tool
+        }
+        ProgressManager.checkCanceled()
+        return when (val plan = plan(request, tool)) {
+            is DotNetBuildPlan.Failed -> IdeBuildCheck.FallBack.also { IdeBuildFallback.notify(project, plan.message) }
+            is DotNetBuildPlan.Ready -> IdeBuildCheck.Ready(status.installFolder, tool, plan.build)
         }
     }
 
@@ -163,7 +176,7 @@ internal object DotNetBuildRunner {
      * Blocking: never call it on the EDT.
      */
     fun buildForIdeAndWait(project: Project, request: DotNetBuildRequest): Boolean? {
-        val check = checkIdeBuild(project) as? IdeBuildCheck.Ready ?: return null
+        val check = checkIdeBuild(project, request) as? IdeBuildCheck.Ready ?: return null
         ApplicationManager.getApplication().invokeAndWait(
             { FileDocumentManager.getInstance().saveAllDocuments() },
             ModalityState.any()

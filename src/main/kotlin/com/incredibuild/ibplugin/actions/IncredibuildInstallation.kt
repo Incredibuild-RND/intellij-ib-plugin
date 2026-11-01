@@ -16,8 +16,10 @@
 package com.incredibuild.ibplugin.actions
 
 import com.intellij.execution.configurations.GeneralCommandLine
-import com.intellij.execution.util.ExecUtil
+import com.intellij.execution.process.CapturingProcessHandler
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.util.SystemInfo
 import java.io.File
 
@@ -120,12 +122,22 @@ internal object IncredibuildInstallation {
     @Volatile
     private var cached: Facts? = null
 
+    /** Held while looking up, so callers arriving meanwhile wait for that rather than start BuildConsole too. */
+    private val lookUpLock = Any()
+
     /**
      * Blocking - reads the registry, and may start BuildConsole - so never call this on the EDT.
      * [refresh] ignores what was found before, e.g. for "Check again".
+     *
+     * Under a progress indicator, cancelling it stops the licence query and throws
+     * [ProcessCanceledException], leaving nothing cached.
      */
     fun check(tool: AcceleratedBuildTool, refresh: Boolean = false): IncredibuildStatus {
-        val facts = cached?.takeUnless { refresh || it.isStale() } ?: lookUp().also { cached = it }
+        cached?.takeUnless { refresh || it.isStale() }?.let { return statusOf(it, tool) }
+        val facts = synchronized(lookUpLock) {
+            // Whoever held the lock may have just looked - good enough unless asked to look again.
+            cached?.takeUnless { refresh || it.isStale() } ?: lookUp().also { cached = it }
+        }
         return statusOf(facts, tool)
     }
 
@@ -162,12 +174,18 @@ internal object IncredibuildInstallation {
         val buildConsole = File(installFolder, "BuildConsole.exe")
         if (!buildConsole.isFile) return null
         return try {
-            val output = ExecUtil.execAndGetOutput(
-                GeneralCommandLine(buildConsole.absolutePath, "/QueryLicense"),
-                LICENSE_QUERY_TIMEOUT_MS
-            )
+            val handler = CapturingProcessHandler(GeneralCommandLine(buildConsole.absolutePath, "/QueryLicense"))
+            val indicator = ProgressManager.getInstance().progressIndicator
+            val output = if (indicator != null) {
+                handler.runProcessWithProgressIndicator(indicator, LICENSE_QUERY_TIMEOUT_MS)
+            } else {
+                handler.runProcess(LICENSE_QUERY_TIMEOUT_MS)
+            }
+            if (output.isCancelled) throw ProcessCanceledException()
             if (output.isTimeout || output.exitCode != 0) return null
             parseLicensed(output.stdout)
+        } catch (e: ProcessCanceledException) {
+            throw e
         } catch (e: Exception) {
             LOG.warn("Could not query the Incredibuild licence", e)
             null
