@@ -31,10 +31,10 @@ class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State
         var jobCount: Int = 300
 
         // Opt-in, and deliberately defaulted off: when enabled, the plugin takes over the
-        // IDE's own build actions (Build Project, and the build phase that Run/Test kick
-        // off), which changes what a standard IDE command does. The Incredibuild menu
-        // actions are unaffected by this flag - those always accelerate, since the user
-        // asked for Incredibuild by name.
+        // IDE's own build actions (Build/Rebuild, and the build phase that Run/Test kick
+        // off) in RustRover, CLion and Rider, which changes what a standard IDE command does.
+        // The Incredibuild menu actions are unaffected by this flag - those always accelerate,
+        // since the user asked for Incredibuild by name.
         var accelerateIdeBuilds: Boolean = false
 
         // Rider only: the MSBuild to run .NET builds with. Blank means auto-detect (see

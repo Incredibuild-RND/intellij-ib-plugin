@@ -15,9 +15,16 @@
  */
 package com.incredibuild.ibplugin.actions.dotnet
 
+import com.incredibuild.ibplugin.actions.AcceleratedBuildTool
+import com.incredibuild.ibplugin.actions.IdeBuildFallback
+import com.incredibuild.ibplugin.actions.IncredibuildInstallation
 import com.incredibuild.ibplugin.actions.IncredibuildRunner
 import com.incredibuild.ibplugin.actions.IncredibuildRunner.AcceleratedBuildPresentation
+import com.incredibuild.ibplugin.actions.IncredibuildRunner.IdeBuildOutcome
+import com.incredibuild.ibplugin.actions.IncredibuildStatus
+import com.incredibuild.ibplugin.analytics.PostHogClient
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProgressIndicator
@@ -28,6 +35,9 @@ import com.intellij.openapi.ui.Messages
 import java.io.File
 
 private val LOG = Logger.getInstance("com.incredibuild.ibplugin.actions.dotnet.DotNetBuildRunner")
+
+/** The analytics action type for a .NET build started from Rider's own build actions or steps. */
+private const val IDE_ACTION_TYPE = "ide_build_dotnet"
 
 /**
  * Everything about Rider's own state an accelerated .NET build needs, captured up front by the
@@ -47,40 +57,143 @@ internal class DotNetBuildRequest(
 
 internal object DotNetBuildRunner {
 
+    /** An Incredibuild menu action's build: any problem is reported with a dialog. */
     fun build(project: Project, request: DotNetBuildRequest, actionType: String) {
+        launch(project, request, actionType) {
+            val installFolder = IncredibuildRunner.ensureIncredibuildInstalled(project, actionType)
+                ?: return@launch null
+            when (val location = MsBuildLocator.locate()) {
+                is MsBuildLocation.NotFound -> null.also { showError(project, location.reason) }
+                is MsBuildLocation.Found -> installFolder to location.tool
+            }
+        }
+    }
+
+    /**
+     * One of Rider's own build actions, overridden while Settings | Tools | Incredibuild routes
+     * them through Incredibuild - with [installFolder] and [tool] already checked by
+     * [checkIdeBuild], so there's nothing left to ask the user about.
+     */
+    fun buildForIde(project: Project, request: DotNetBuildRequest, installFolder: File, tool: MsBuildTool) {
+        PostHogClient.capture("ide_build_accelerated", mapOf("action" to IDE_ACTION_TYPE))
+        launch(project, request, IDE_ACTION_TYPE) { installFolder to tool }
+    }
+
+    private fun launch(
+        project: Project,
+        request: DotNetBuildRequest,
+        actionType: String,
+        locate: () -> Pair<File, MsBuildTool>?
+    ) {
         // Rider's own build saves unsaved editors first, so the build sees what's on screen;
         // MSBuild reads from disk, so this has to as well.
         FileDocumentManager.getInstance().saveAllDocuments()
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Locating Incredibuild") {
             override fun run(indicator: ProgressIndicator) {
-                val installFolder = IncredibuildRunner.ensureIncredibuildInstalled(project, actionType) ?: return
-
-                val tool = when (val location = MsBuildLocator.locate()) {
-                    is MsBuildLocation.NotFound -> return showError(project, location.reason)
-                    is MsBuildLocation.Found -> location.tool
-                }
-
-                val build = when (request.kind) {
-                    DotNetBuildKind.BUILD_SOLUTION, DotNetBuildKind.REBUILD_SOLUTION -> solutionBuild(
-                        tool,
-                        request.entryPoint,
-                        request.kind,
-                        request.configuration,
-                        request.platform,
-                        restore = needsRestore(readEntryPointProjectFiles(request.entryPoint))
+                // Locating Incredibuild and MSBuild is blocking work too - hence inside the task.
+                val (installFolder, tool) = locate() ?: return
+                when (val plan = plan(request, tool)) {
+                    is DotNetBuildPlan.Failed -> showError(project, plan.message)
+                    is DotNetBuildPlan.Ready -> IncredibuildRunner.launchNativeBuild(
+                        project,
+                        installFolder,
+                        plan.build,
+                        actionType,
+                        presentation(request, tool)
                     )
+                }
+            }
+        })
+    }
 
-                    DotNetBuildKind.BUILD_PROJECTS -> {
-                        val targetNames = readProjectTargets(request.solutionFile)
-                        val missing = request.projectFiles.filter { normalizedPath(it) !in targetNames }
-                        if (missing.isNotEmpty()) {
-                            return showError(
-                                project,
-                                "Could not find these projects in ${File(request.solutionFile).name}, so they can't be " +
-                                    "built through it:\n" + missing.joinToString("\n")
-                            )
-                        }
+    /** What an IDE build found when [checkIdeBuild] checked whether it can be accelerated. */
+    sealed interface IdeBuildCheck {
+        class Ready(val installFolder: File, val tool: MsBuildTool) : IdeBuildCheck
+
+        /** It can't - [IdeBuildFallback] has already told the user why, and Rider builds it instead. */
+        data object FallBack : IdeBuildCheck
+    }
+
+    /**
+     * Whether one of Rider's own builds can go through Incredibuild: Incredibuild usable, and an
+     * MSBuild to run. If not, says why (a notification, never a dialog - the build still goes
+     * ahead, as Rider's own). Blocking: never call it on the EDT.
+     */
+    fun checkIdeBuild(project: Project): IdeBuildCheck {
+        val status = IncredibuildInstallation.check(AcceleratedBuildTool.NATIVE)
+        if (status !is IncredibuildStatus.Ready) {
+            IdeBuildFallback.notify(project, status)
+            return IdeBuildCheck.FallBack
+        }
+        return when (val location = MsBuildLocator.locate()) {
+            is MsBuildLocation.NotFound -> IdeBuildCheck.FallBack.also { IdeBuildFallback.notify(project, location.reason) }
+            is MsBuildLocation.Found -> IdeBuildCheck.Ready(status.installFolder, location.tool)
+        }
+    }
+
+    /**
+     * A build for one of Rider's own before-launch steps, which reports the outcome itself: runs
+     * [request] and waits for it. True or false for a build that ran (it succeeded or not), null
+     * if it couldn't be accelerated after all - the caller then has Rider build it instead.
+     * Blocking: never call it on the EDT.
+     */
+    fun buildForIdeAndWait(project: Project, request: DotNetBuildRequest): Boolean? {
+        val check = checkIdeBuild(project) as? IdeBuildCheck.Ready ?: return null
+        val build = when (val plan = plan(request, check.tool)) {
+            is DotNetBuildPlan.Failed -> return null.also { IdeBuildFallback.notify(project, plan.message) }
+            is DotNetBuildPlan.Ready -> plan.build
+        }
+        ApplicationManager.getApplication().invokeAndWait(
+            { FileDocumentManager.getInstance().saveAllDocuments() },
+            ModalityState.any()
+        )
+        PostHogClient.capture("ide_build_accelerated", mapOf("action" to IDE_ACTION_TYPE))
+        return when (val outcome = IncredibuildRunner.runNativeBuildAndWait(
+            project,
+            check.installFolder,
+            build,
+            IDE_ACTION_TYPE,
+            presentation(request, check.tool)
+        )) {
+            is IdeBuildOutcome.NotPrepared -> null.also { IdeBuildFallback.notify(project, outcome.message) }
+            IdeBuildOutcome.NotStarted -> false
+            is IdeBuildOutcome.Finished -> outcome.exitCode == 0 && !outcome.stopped
+        }
+    }
+
+    /** What [plan] came back with. */
+    private sealed interface DotNetBuildPlan {
+        class Ready(val build: IncredibuildRunner.NativeBuild) : DotNetBuildPlan
+
+        /** [message] is shown to the user as-is. */
+        class Failed(val message: String) : DotNetBuildPlan
+    }
+
+    /** The MSBuild invocation for [request]. Reads the solution from disk, so not on the EDT. */
+    private fun plan(request: DotNetBuildRequest, tool: MsBuildTool): DotNetBuildPlan =
+        when (request.kind) {
+            DotNetBuildKind.BUILD_SOLUTION, DotNetBuildKind.REBUILD_SOLUTION -> DotNetBuildPlan.Ready(
+                solutionBuild(
+                    tool,
+                    request.entryPoint,
+                    request.kind,
+                    request.configuration,
+                    request.platform,
+                    restore = needsRestore(readEntryPointProjectFiles(request.entryPoint))
+                )
+            )
+
+            DotNetBuildKind.BUILD_PROJECTS -> {
+                val targetNames = readProjectTargets(request.solutionFile)
+                val missing = request.projectFiles.filter { normalizedPath(it) !in targetNames }
+                if (missing.isNotEmpty()) {
+                    DotNetBuildPlan.Failed(
+                        "Could not find these projects in ${File(request.solutionFile).name}, so they can't be " +
+                            "built through it:\n" + missing.joinToString("\n")
+                    )
+                } else {
+                    DotNetBuildPlan.Ready(
                         projectsBuild(
                             tool,
                             request.solutionFile,
@@ -90,19 +203,10 @@ internal object DotNetBuildRunner {
                             targetNames,
                             restore = needsRestore(request.projectFiles)
                         )
-                    }
+                    )
                 }
-
-                IncredibuildRunner.launchNativeBuild(
-                    project,
-                    installFolder,
-                    build,
-                    actionType,
-                    presentation(request, tool)
-                )
             }
-        })
-    }
+        }
 
     /** The solution's per-project build targets - see [solutionProjectTargets]. Empty if the
      * solution can't be read, which then reports every selected project as not found. */

@@ -120,14 +120,16 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
         tasks: Array<out ProjectTask>,
         promise: AsyncPromise<Result>
     ) {
-        val installFolder = IncredibuildLocator.findInstallFolder()
-        if (installFolder == null) {
-            // No dialog here, unlike the explicit menu actions: this path is a standard IDE
-            // build the user did not ask Incredibuild for, so it must stay silent and simply
-            // build normally.
+        val status = IncredibuildInstallation.check(AcceleratedBuildTool.CARGO)
+        if (status !is IncredibuildStatus.Ready) {
+            // A notification rather than the explicit menu actions' dialogs: this is a standard
+            // IDE build, which must go ahead as a normal one - the user is only told why it
+            // wasn't accelerated.
+            IdeBuildFallback.notify(project, status)
             delegateToCargo(project, context, tasks, promise)
             return
         }
+        val installFolder = status.installFolder
 
         val plannedBuilds = expandToPlannedBuilds(tasks)
         if (plannedBuilds.isEmpty()) {

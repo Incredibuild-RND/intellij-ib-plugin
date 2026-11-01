@@ -43,6 +43,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.incredibuild.ibplugin.analytics.PostHogClient
 import java.io.File
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -54,20 +55,11 @@ private val BUILD_ID_REGEX = Regex("""Build ID:\s*\{([0-9A-Fa-f-]+)}""")
 // Used for both Windows and Linux - same landing page for both.
 private const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrations/jetbrains-ides"
 
-private const val INCREDIBUILD_DOWNLOAD_PAGE =
+internal const val INCREDIBUILD_DOWNLOAD_PAGE =
     "https://docs.incredibuild.com/site-landing/download-docs-center"
 
-private const val MINIMUM_RUST_BUILD_VERSION = "10.37.1"
-
-// The Linux team found an issue with an earlier released Linux Incredibuild
-// version during RustRover integration testing, hence this gate. Deliberately a
-// separate constant, not shared with the Windows one: Windows and Linux
-// Incredibuild use entirely unrelated version-numbering schemes (e.g.
-// "10.37.0.12597" vs "3.18.0").
-private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
-
 /** Declared in plugin.xml. */
-private const val NOTIFICATION_GROUP_ID = "Incredibuild"
+internal const val NOTIFICATION_GROUP_ID = "Incredibuild"
 
 private const val STATUS_POLL_INTERVAL_MS = 250L
 
@@ -113,7 +105,7 @@ object IncredibuildRunner {
             return null
         }
 
-        val minimumVersion = if (SystemInfo.isLinux) MINIMUM_RUST_BUILD_VERSION_LINUX else MINIMUM_RUST_BUILD_VERSION
+        val minimumVersion = AcceleratedBuildTool.CARGO.minimumVersion!!
         val installedVersion = IncredibuildLocator.findVersion()
         if (installedVersion != null &&
             IncredibuildLocator.compareVersions(installedVersion, minimumVersion) < 0
@@ -419,6 +411,8 @@ object IncredibuildRunner {
         prepared: PreparedBuild.Ready,
         actionType: String,
         presentation: AcceleratedBuildPresentation? = null,
+        onNotStarted: () -> Unit = {},
+        onStarted: (OSProcessHandler) -> Unit = {},
         onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
         ApplicationManager.getApplication().invokeLater {
@@ -427,7 +421,10 @@ object IncredibuildRunner {
                 prepared.commandLine,
                 presentation?.contentName ?: "Build",
                 presentation?.banner,
-                onNotStarted = prepared.cleanUp,
+                onNotStarted = {
+                    prepared.cleanUp()
+                    onNotStarted()
+                },
                 onStarted = { processHandler ->
                     PostHogClient.capture("build_started", mapOf("action" to actionType))
                     PostHogClient.captureOnce(
@@ -438,6 +435,7 @@ object IncredibuildRunner {
                     if (presentation != null) {
                         trackInStatusBar(project, processHandler, presentation)
                     }
+                    onStarted(processHandler)
                 }
             ) { exitCode ->
                 prepared.cleanUp()
@@ -919,6 +917,57 @@ object IncredibuildRunner {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
             is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, presentation)
         }
+    }
+
+    /** How a build started by [runNativeBuildAndWait] ended. */
+    internal sealed interface IdeBuildOutcome {
+        /** It couldn't be prepared ([message] says why), so nothing ran - the caller falls back. */
+        class NotPrepared(val message: String) : IdeBuildOutcome
+
+        /** Another build was running and the user chose not to stop it, or it didn't stop in time. */
+        data object NotStarted : IdeBuildOutcome
+
+        class Finished(val exitCode: Int, val stopped: Boolean) : IdeBuildOutcome
+    }
+
+    /**
+     * [launchNativeBuild] for the IDE's own build pipelines (CLion's [com.intellij.task.ProjectTaskRunner],
+     * Rider's before-launch build), which report the outcome themselves and so must wait for it
+     * here rather than be called back. Blocks until the build ends; never call it on the EDT.
+     *
+     * The build runs exactly as the Incredibuild menu's do - in the Incredibuild tool window, with
+     * the status-bar progress and the finished/failed notification from [presentation] - so an
+     * accelerated IDE build is just as recognisable as one.
+     */
+    internal fun runNativeBuildAndWait(
+        project: Project,
+        installFolder: File,
+        build: NativeBuild,
+        actionType: String,
+        presentation: AcceleratedBuildPresentation
+    ): IdeBuildOutcome {
+        val prepared = when (val result = prepareNativeBuild(project, installFolder, build)) {
+            is PreparedBuild.Failed -> return IdeBuildOutcome.NotPrepared(result.message)
+            is PreparedBuild.Ready -> result
+        }
+        // Asked here, where blocking is fine, rather than only by run() on the EDT - see
+        // awaitNoBuildRunning. run() checks again, in case another build started meanwhile.
+        if (!awaitNoBuildRunning(project)) {
+            prepared.cleanUp()
+            return IdeBuildOutcome.NotStarted
+        }
+        val started = CompletableFuture<OSProcessHandler?>()
+        launchBuild(
+            project,
+            prepared,
+            actionType,
+            presentation,
+            onNotStarted = { started.complete(null) },
+            onStarted = { started.complete(it) }
+        )
+        val processHandler = started.get() ?: return IdeBuildOutcome.NotStarted
+        processHandler.waitFor()
+        return IdeBuildOutcome.Finished(processHandler.exitCode ?: -1, processHandler.wasStopRequested())
     }
 
     /**

@@ -24,14 +24,31 @@ configuration, build profile and target selection are all respected.
 
 ### Accelerating the IDE's own build actions
 
-The IDE's build actions can be accelerated too. Turn on **Accelerate the IDE's own build actions**
-under **Settings/Preferences > Tools > Incredibuild**, and **Build Project** - along with the build
-that runs before **Run** and **Test** - goes through Incredibuild, reporting into the IDE's own
-**Build** tool window. The commands and keyboard shortcuts stay exactly where they are.
+The IDE's build actions can be accelerated too, in RustRover, CLion and Rider. Turn on **Accelerate the
+IDE's own build actions** under **Settings/Preferences > Tools > Incredibuild**, and the IDE's standard
+**Build** and **Rebuild** go through Incredibuild - whether started from the **Build** menu, the toolbar
+or a keyboard shortcut - and so does the build a run configuration performs before it starts. The
+commands and keyboard shortcuts stay exactly where they are; only what happens underneath changes.
 
-The setting is off by default. While it is off - or if Incredibuild isn't installed on the machine -
-those actions behave exactly as they do without this plugin. The actions in the **Incredibuild** menu
-always use Incredibuild, whichever way the setting is set.
+- **RustRover**: **Build Project** / **Rebuild Project**, and the build before **Run** and **Test**.
+  These report into the IDE's own **Build** tool window.
+- **CLion**: **Build** and **Rebuild** of the selected target, **Build Project** / **Build All**, and a
+  CMake run configuration's **Build** step. A rebuild becomes `cmake --build --clean-first`.
+- **Rider**: **Build Solution** (including the toolbar's Build button and its shortcut, when it builds
+  the solution), **Rebuild Solution**, **Build Selection** in the Solution Explorer, and a run
+  configuration's **Build Solution** / **Build Project** step.
+
+In CLion and Rider the accelerated build shows its output in the **Incredibuild** tool window, with the
+same status-bar progress and result notification as the **Incredibuild** menu's actions.
+
+The setting is off by default, and while it is off those actions behave exactly as they do without
+this plugin. With it on, a build that can't be accelerated falls back to a standard local build rather
+than failing, and a notification says why: Incredibuild isn't installed, isn't licensed to start
+builds on this machine (checked on Windows), its version is older than the minimum supported one, or -
+in CLion - the active CMake profile uses a remote (WSL, Docker, SSH) toolchain. Actions that have no
+Incredibuild equivalent - Clean, Install, recompiling a single file, Rider's per-project build modes -
+always run as the IDE's own. The actions in the **Incredibuild** menu always use Incredibuild, whichever
+way the setting is set.
 
 ### Rider (.NET)
 
@@ -60,8 +77,10 @@ which plugins can't read, so a different one can be set under **Settings/Prefere
 
 ### Settings
 
-**Settings/Preferences > Tools > Incredibuild** configures the number of parallel jobs (`-j`)
-accelerated Cargo/CMake builds request, the opt-in above, and (in Rider) the MSBuild to use.
+**Settings/Preferences > Tools > Incredibuild** shows the Incredibuild installation the plugin uses -
+its version and folder, and whether it's ready to build or why not (**Check again** looks again) - and
+configures the opt-in above, the number of parallel jobs (`-j`) accelerated Cargo/CMake builds
+request, and (in Rider) the MSBuild to use.
 
 If Incredibuild isn't installed on the machine, the menu commands offer to open
 [incredibuild.com](https://www.incredibuild.com/) to download it.
