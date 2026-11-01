@@ -162,7 +162,8 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
                     resolved.environment
                 ),
                 "ide_build_cmake",
-                presentation(plan)
+                presentation(plan),
+                outputBaseDirectories = listOf(resolved.buildDirectory)
             )
             when (outcome) {
                 is IdeBuildOutcome.NotPrepared -> return fallBack(outcome.message)
@@ -234,7 +235,7 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
         val target = plan.targetName ?: "all targets"
         val profile = plan.configuration.profileName
         return AcceleratedBuildPresentation(
-            contentName = actionName,
+            contentName = if (plan.targetName != null) "$actionName '$target'" else "$actionName $target",
             banner = "Incredibuild: $actionName (accelerated)\n" +
                 "  Building: $target\n" +
                 "  Profile:  $profile",

@@ -27,6 +27,7 @@ import com.intellij.execution.process.ColoredProcessHandler
 import com.intellij.execution.process.KillableProcessHandler
 import com.intellij.execution.process.OSProcessHandler
 import com.intellij.execution.process.ProcessEvent
+import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.util.ExecUtil
 import com.intellij.ide.BrowserUtil
@@ -43,7 +44,6 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.incredibuild.ibplugin.analytics.PostHogClient
 import java.io.File
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -411,8 +411,6 @@ object IncredibuildRunner {
         prepared: PreparedBuild.Ready,
         actionType: String,
         presentation: AcceleratedBuildPresentation? = null,
-        onNotStarted: () -> Unit = {},
-        onStarted: (OSProcessHandler) -> Unit = {},
         onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
         ApplicationManager.getApplication().invokeLater {
@@ -421,10 +419,7 @@ object IncredibuildRunner {
                 prepared.commandLine,
                 presentation?.contentName ?: "Build",
                 presentation?.banner,
-                onNotStarted = {
-                    prepared.cleanUp()
-                    onNotStarted()
-                },
+                onNotStarted = prepared.cleanUp,
                 onStarted = { processHandler ->
                     PostHogClient.capture("build_started", mapOf("action" to actionType))
                     PostHogClient.captureOnce(
@@ -435,7 +430,6 @@ object IncredibuildRunner {
                     if (presentation != null) {
                         trackInStatusBar(project, processHandler, presentation)
                     }
-                    onStarted(processHandler)
                 }
             ) { exitCode ->
                 prepared.cleanUp()
@@ -450,11 +444,15 @@ object IncredibuildRunner {
      * accelerated build is visible even with the Incredibuild tool window hidden - and reports
      * the outcome as a notification once it ends. Cancelling the progress stops the build the
      * same graceful way Stop Build does ([OSProcessHandler.destroyProcess] on our handler).
+     *
+     * [notifyResult] false leaves out the notification, for a build whose outcome the Build tool
+     * window already reports (see [IdeBuildView]).
      */
     private fun trackInStatusBar(
         project: Project,
         processHandler: OSProcessHandler,
-        presentation: AcceleratedBuildPresentation
+        presentation: AcceleratedBuildPresentation,
+        notifyResult: Boolean = true
     ) {
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, presentation.progressTitle, true) {
             override fun run(indicator: ProgressIndicator) {
@@ -472,6 +470,7 @@ object IncredibuildRunner {
                         indicator.text = "Stopping Incredibuild build..."
                     }
                 }
+                if (!notifyResult) return
                 val exitCode = processHandler.exitCode
                 val (content, type) = when {
                     processHandler.wasStopRequested() -> "${presentation.contentName} was stopped." to NotificationType.INFORMATION
@@ -679,7 +678,11 @@ object IncredibuildRunner {
         val stopRequested: Boolean
     }
 
-    private fun OSProcessHandler.wasStopRequested(): Boolean = (this as? IncredibuildProcessHandler)?.stopRequested == true
+    private fun OSProcessHandler.wasStopRequested(): Boolean = wasStopRequested(this)
+
+    /** Whether [processHandler] - one of [createProcessHandler]'s - ended because it was asked to stop. */
+    internal fun wasStopRequested(processHandler: ProcessHandler): Boolean =
+        (processHandler as? IncredibuildProcessHandler)?.stopRequested == true
 
     /**
      * Asks Incredibuild to cancel the running build by build-id, returning false if there
@@ -931,41 +934,59 @@ object IncredibuildRunner {
     }
 
     /**
-     * [launchNativeBuild] for the IDE's own build pipelines (CLion's [com.intellij.task.ProjectTaskRunner],
-     * Rider's before-launch build), which report the outcome themselves and so must wait for it
-     * here rather than be called back. Blocks until the build ends; never call it on the EDT.
+     * [launchNativeBuild] for the IDE's own builds - CLion's [com.intellij.task.ProjectTaskRunner],
+     * Rider's build actions and before-launch build - which report into the IDE's Build tool
+     * window ([IdeBuildView]) rather than ours, just as a local build of theirs would, and as the
+     * Cargo IDE build does. Blocks until the build ends, so the caller can report the outcome;
+     * never call it on the EDT.
      *
-     * The build runs exactly as the Incredibuild menu's do - in the Incredibuild tool window, with
-     * the status-bar progress and the finished/failed notification from [presentation] - so an
-     * accelerated IDE build is just as recognisable as one.
+     * [presentation]'s banner heads the build's output, and its progress title stays in the status
+     * bar while it runs - the result itself is the Build tool window's to report.
+     *
+     * [outputBaseDirectories] resolve the relative paths in compiler messages; the build's working
+     * directory is tried after them.
      */
     internal fun runNativeBuildAndWait(
         project: Project,
         installFolder: File,
         build: NativeBuild,
         actionType: String,
-        presentation: AcceleratedBuildPresentation
+        presentation: AcceleratedBuildPresentation,
+        outputBaseDirectories: List<String> = emptyList()
     ): IdeBuildOutcome {
         val prepared = when (val result = prepareNativeBuild(project, installFolder, build)) {
             is PreparedBuild.Failed -> return IdeBuildOutcome.NotPrepared(result.message)
             is PreparedBuild.Ready -> result
         }
-        // Asked here, where blocking is fine, rather than only by run() on the EDT - see
-        // awaitNoBuildRunning. run() checks again, in case another build started meanwhile.
+        // One Incredibuild build at a time, as for the Incredibuild menu's builds - asked here,
+        // where blocking is fine (see awaitNoBuildRunning).
         if (!awaitNoBuildRunning(project)) {
             prepared.cleanUp()
             return IdeBuildOutcome.NotStarted
         }
-        val started = CompletableFuture<OSProcessHandler?>()
-        launchBuild(
+
+        // decodeAnsiColors = false: the Build tool window colours output by reading the escape
+        // codes from the text itself - see RawIncredibuildProcessHandler.
+        val processHandler = createProcessHandler(prepared.commandLine, decodeAnsiColors = false)
+        processHandler.addProcessListener(object : ProcessListener {
+            override fun processTerminated(event: ProcessEvent) = prepared.cleanUp()
+        })
+        IdeBuildView(
             project,
-            prepared,
-            actionType,
-            presentation,
-            onNotStarted = { started.complete(null) },
-            onStarted = { started.complete(it) }
+            "${presentation.contentName} with Incredibuild",
+            build.workingDirectory,
+            (outputBaseDirectories + build.workingDirectory).distinct(),
+            processHandler
+        ).start(presentation.banner)
+        trackInStatusBar(project, processHandler, presentation, notifyResult = false)
+
+        PostHogClient.capture("build_started", mapOf("action" to actionType))
+        PostHogClient.captureOnce(
+            "com.incredibuild.ibplugin.analytics.firstBuildSent",
+            "first_build",
+            mapOf("action" to actionType)
         )
-        val processHandler = started.get() ?: return IdeBuildOutcome.NotStarted
+        processHandler.startNotify()
         processHandler.waitFor()
         return IdeBuildOutcome.Finished(processHandler.exitCode ?: -1, processHandler.wasStopRequested())
     }

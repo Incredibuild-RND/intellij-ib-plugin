@@ -49,7 +49,9 @@ internal class ResolvedCMakeBuild(
     val executable: String,
     val arguments: List<String>,
     val workingDirectory: String,
-    val environment: Map<String, String>
+    val environment: Map<String, String>,
+    /** The CMake build directory - what the relative paths in compiler messages are relative to. */
+    val buildDirectory: String
 )
 
 /** What [deriveCMakeBuild] came back with. */
@@ -220,7 +222,8 @@ private fun resolveCMakeBuild(
             cmake.executablePath,
             parameters,
             workingDirectory,
-            commandLine.environment
+            commandLine.environment,
+            buildDir.absolutePath
         )
     )
 }

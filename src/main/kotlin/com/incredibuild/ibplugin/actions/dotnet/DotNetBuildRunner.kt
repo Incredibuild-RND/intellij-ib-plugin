@@ -71,12 +71,36 @@ internal object DotNetBuildRunner {
 
     /**
      * One of Rider's own build actions, overridden while Settings | Tools | Incredibuild routes
-     * them through Incredibuild - with [installFolder] and [tool] already checked by
-     * [checkIdeBuild], so there's nothing left to ask the user about.
+     * them through Incredibuild - with [check] already done by [checkIdeBuild], so there's nothing
+     * left to ask the user about. Reports into the Build tool window, like the before-launch build
+     * ([buildForIdeAndWait]) and like Rider's own build. Call it on the EDT, as actions run.
      */
-    fun buildForIde(project: Project, request: DotNetBuildRequest, installFolder: File, tool: MsBuildTool) {
+    fun buildForIde(project: Project, request: DotNetBuildRequest, check: IdeBuildCheck.Ready) {
+        FileDocumentManager.getInstance().saveAllDocuments()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            when (val outcome = runForIde(project, request, check)) {
+                // Too late to hand back to Rider's own action (its event is long gone), so it's
+                // reported like the Incredibuild menu's own build would report it.
+                is IdeBuildOutcome.NotPrepared -> showError(project, outcome.message)
+                else -> Unit
+            }
+        }
+    }
+
+    private fun runForIde(project: Project, request: DotNetBuildRequest, check: IdeBuildCheck.Ready): IdeBuildOutcome {
+        val build = when (val plan = plan(request, check.tool)) {
+            is DotNetBuildPlan.Failed -> return IdeBuildOutcome.NotPrepared(plan.message)
+            is DotNetBuildPlan.Ready -> plan.build
+        }
         PostHogClient.capture("ide_build_accelerated", mapOf("action" to IDE_ACTION_TYPE))
-        launch(project, request, IDE_ACTION_TYPE) { installFolder to tool }
+        return IncredibuildRunner.runNativeBuildAndWait(
+            project,
+            check.installFolder,
+            build,
+            IDE_ACTION_TYPE,
+            presentation(request, check.tool),
+            outputBaseDirectories = listOf(File(request.solutionFile).absoluteFile.parent)
+        )
     }
 
     private fun launch(
@@ -140,22 +164,11 @@ internal object DotNetBuildRunner {
      */
     fun buildForIdeAndWait(project: Project, request: DotNetBuildRequest): Boolean? {
         val check = checkIdeBuild(project) as? IdeBuildCheck.Ready ?: return null
-        val build = when (val plan = plan(request, check.tool)) {
-            is DotNetBuildPlan.Failed -> return null.also { IdeBuildFallback.notify(project, plan.message) }
-            is DotNetBuildPlan.Ready -> plan.build
-        }
         ApplicationManager.getApplication().invokeAndWait(
             { FileDocumentManager.getInstance().saveAllDocuments() },
             ModalityState.any()
         )
-        PostHogClient.capture("ide_build_accelerated", mapOf("action" to IDE_ACTION_TYPE))
-        return when (val outcome = IncredibuildRunner.runNativeBuildAndWait(
-            project,
-            check.installFolder,
-            build,
-            IDE_ACTION_TYPE,
-            presentation(request, check.tool)
-        )) {
+        return when (val outcome = runForIde(project, request, check)) {
             is IdeBuildOutcome.NotPrepared -> null.also { IdeBuildFallback.notify(project, outcome.message) }
             IdeBuildOutcome.NotStarted -> false
             is IdeBuildOutcome.Finished -> outcome.exitCode == 0 && !outcome.stopped

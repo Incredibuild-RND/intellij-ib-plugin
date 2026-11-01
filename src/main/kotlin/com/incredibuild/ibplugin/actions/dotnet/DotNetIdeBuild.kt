@@ -80,7 +80,7 @@ abstract class RiderBuildActionOverride internal constructor(
             project
         )
         when (check) {
-            is IdeBuildCheck.Ready -> DotNetBuildRunner.buildForIde(project, request, check.installFolder, check.tool)
+            is IdeBuildCheck.Ready -> DotNetBuildRunner.buildForIde(project, request, check)
             IdeBuildCheck.FallBack -> super.actionPerformed(e)
         }
     }

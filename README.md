@@ -38,8 +38,12 @@ commands and keyboard shortcuts stay exactly where they are; only what happens u
   the solution), **Rebuild Solution**, **Build Selection** in the Solution Explorer, and a run
   configuration's **Build Solution** / **Build Project** step.
 
-In CLion and Rider the accelerated build shows its output in the **Incredibuild** tool window, with the
-same status-bar progress and result notification as the **Incredibuild** menu's actions.
+In every IDE, an accelerated build of the IDE's own reports into the IDE's **Build** tool window, just
+as a local build does: its output live, with progress (Ninja's and Make's step counts, MSBuild's
+finished projects) while it's distributed; each compiler error and warning in the build tree,
+clickable through to its file and line (as are the file locations in the output); and the result and
+how long it took. The Build tool window's stop button stops the Incredibuild build cleanly, as
+**Stop Build** does.
 
 The setting is off by default, and while it is off those actions behave exactly as they do without
 this plugin. With it on, a build that can't be accelerated falls back to a standard local build rather
