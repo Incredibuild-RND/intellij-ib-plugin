@@ -58,10 +58,11 @@ internal object CompilerOutputParser {
         """^(?<loc>(?<file>(?:[A-Za-z]:)?[^:<>|"*?\s][^:<>|"*?]*?):(?<line>\d+)(?::(?<col>\d+))?):\s*$KIND:\s*(?<msg>.*)$"""
     )
 
-    /** MSVC/MSBuild without a file: `LINK : fatal error LNK1104: ...`, `MSBUILD : error MSB1009: ...`,
-     * `cl : Command line warning D9002: ...`. */
+    /** MSVC/MSBuild without a line: `LINK : fatal error LNK1104: ...`, `MSBUILD : error MSB1009: ...`,
+     * `cl : Command line warning D9002: ...`, a project-level `C:\src\App.csproj : error NU1101: ...`
+     * (its origin may start with a drive) and code-less `EXEC : error : ...`. */
     private val MSVC_UNLOCATED = Regex(
-        """^\s*(?:\d+>)?\s*(?:[^:\s][^:]*?\s*:\s*)?(?:Command line\s+)?$KIND\s+(?<code>[A-Za-z]+\d+)\s*:\s*""" +
+        """^\s*(?:\d+>)?\s*(?:(?:[A-Za-z]:)?[^:\s][^:]*?\s*:\s*)?(?:Command line\s+)?$KIND(?:\s+(?<code>[A-Za-z]+\d+))?\s*:\s*""" +
             """(?<msg>.*?)(?:\s+\[[^\]]+])?\s*$"""
     )
 
@@ -88,12 +89,15 @@ internal object CompilerOutputParser {
         if (line.isBlank()) return null
         located(MSVC_LOCATED, line)?.let { return it }
         located(GCC_LOCATED, line)?.let { return it }
-        MSVC_UNLOCATED.matchEntire(line)?.let { match ->
-            val code = match.groups["code"]!!.value
-            return diagnostic(match, "$code: ${match.groups["msg"]!!.value}")
-        }
+        // Ahead of MSVC_UNLOCATED, which - with its code optional - would take `clang: error: ...`
+        // too, dropping the tool's name.
         TOOL_UNLOCATED.matchEntire(line)?.let { match ->
             return diagnostic(match, "${match.groups["tool"]!!.value}: ${match.groups["msg"]!!.value}")
+        }
+        MSVC_UNLOCATED.matchEntire(line)?.let { match ->
+            val code = match.groups["code"]?.value
+            val message = match.groups["msg"]!!.value
+            return diagnostic(match, if (code != null) "$code: $message" else message)
         }
         NINJA_PROGRESS.matchEntire(line)?.let { match ->
             val (done, total, message) = match.destructured

@@ -114,6 +114,39 @@ class CompilerOutputParserTest {
     }
 
     @Test
+    fun `a NuGet error on a Windows project file is an error`() {
+        val expected = "NU1101: Unable to find package Foo."
+        for (line in listOf(
+            """C:\src\App\App.csproj : error NU1101: Unable to find package Foo. [C:\src\App.sln]""",
+            """  3>C:\src\App\App.csproj : error NU1101: Unable to find package Foo. [C:\src\App.sln]""",
+            """/home/me/src/App/App.csproj : error NU1101: Unable to find package Foo. [/home/me/src/App.sln]""",
+        )) {
+            val parsed = diagnostic(line)
+            assertEquals(line, true, parsed.isError)
+            assertNull(line, parsed.file)
+            assertEquals(line, expected, parsed.message)
+        }
+    }
+
+    @Test
+    fun `a NuGet warning on a Windows project file is a warning`() {
+        val parsed = diagnostic(
+            """C:\src\App\App.csproj : warning NU1603: App depends on Foo (>= 1.0.0) but Foo 1.0.0 was not found. [C:\src\App.sln]"""
+        )
+        assertEquals(false, parsed.isError)
+        assertEquals("NU1603: App depends on Foo (>= 1.0.0) but Foo 1.0.0 was not found.", parsed.message)
+    }
+
+    @Test
+    fun `an MSBuild error without a code is still an error`() {
+        val parsed = diagnostic("EXEC : error : something failed")
+        assertEquals(true, parsed.isError)
+        assertNull(parsed.file)
+        assertEquals("something failed", parsed.message)
+        assertEquals("something failed", diagnostic("""  2>C:\src\App\App.csproj : error : something failed""").message)
+    }
+
+    @Test
     fun `a GCC-style tool error names the tool`() {
         val parsed = diagnostic("clang: error: linker command failed with exit code 1 (use -v to see invocation)")
         assertNull(parsed.file)

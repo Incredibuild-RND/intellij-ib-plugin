@@ -34,6 +34,7 @@ import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.ex.ActionUtil
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
@@ -175,7 +176,7 @@ abstract class RiderBeforeRunBuildOverride internal constructor(
     ): Promise<Boolean> = rider?.configureTask(context, configuration, task) ?: resolvedPromise(false)
 
     override fun canExecuteTask(configuration: RunConfiguration, task: BeforeRunTask<*>): Boolean =
-        rider?.canExecuteTask(configuration, task) == true
+        rider?.canExecuteTask(configuration, task) != false
 
     /** Called on a background thread, and blocks until the build ends - as Rider's own does. */
     override fun executeTask(
@@ -184,7 +185,12 @@ abstract class RiderBeforeRunBuildOverride internal constructor(
         environment: ExecutionEnvironment,
         task: BeforeRunTask<*>
     ): Boolean {
-        val rider = rider ?: return false
+        // This is registered for every Rider user, setting on or off - so if a Rider release
+        // renames or moves its provider, the run goes ahead without the build rather than not at all.
+        val rider = rider ?: run {
+            LOG.warn("Rider's '${getId()}' before-launch step wasn't found; skipping the build")
+            return true
+        }
         if (IncredibuildSettings.getInstance().accelerateIdeBuilds) {
             val request = request(task, configuration)
             if (request != null) {
@@ -210,6 +216,10 @@ abstract class RiderBeforeRunBuildOverride internal constructor(
             ModalityState.any()
         )
         return (capture as? DotNetBuildCapture.Ready)?.request
+    }
+
+    private companion object {
+        private val LOG = Logger.getInstance(RiderBeforeRunBuildOverride::class.java)
     }
 }
 
