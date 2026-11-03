@@ -15,6 +15,7 @@
  */
 package com.incredibuild.ibplugin.settings
 
+import com.incredibuild.ibplugin.actions.IncredibuildInstallation
 import com.incredibuild.ibplugin.actions.dotnet.MsBuildLocator
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.PersistentStateComponent
@@ -61,6 +62,9 @@ class IncredibuildSettings : PersistentStateComponent<IncredibuildSettings.State
     var accelerateIdeBuilds: Boolean
         get() = state.accelerateIdeBuilds
         set(value) {
+            // Turned on: look Incredibuild up now, so the first build routed through it needn't
+            // wait for that - the project-open warm-up only covers it being on already.
+            if (value && !state.accelerateIdeBuilds) IncredibuildInstallation.refreshInBackground()
             state.accelerateIdeBuilds = value
         }
 

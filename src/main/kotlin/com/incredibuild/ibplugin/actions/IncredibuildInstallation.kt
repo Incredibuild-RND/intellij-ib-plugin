@@ -17,11 +17,13 @@ package com.incredibuild.ibplugin.actions
 
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.CapturingProcessHandler
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.util.SystemInfo
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 private val LOG = Logger.getInstance(IncredibuildInstallation::class.java)
 
@@ -125,6 +127,9 @@ internal object IncredibuildInstallation {
     /** Held while looking up, so callers arriving meanwhile wait for that rather than start BuildConsole too. */
     private val lookUpLock = Any()
 
+    /** Set while [refreshInBackground] is looking, so repeated builds don't queue up more lookups. */
+    private val refreshing = AtomicBoolean(false)
+
     /**
      * Blocking - reads the registry, and may start BuildConsole - so never call this on the EDT.
      * [refresh] ignores what was found before, e.g. for "Check again".
@@ -141,14 +146,42 @@ internal object IncredibuildInstallation {
         return statusOf(facts, tool)
     }
 
+    /**
+     * [check] for one of the IDE's own builds, which shouldn't wait on BuildConsole every time the
+     * cache runs out: what was found before is used as-is once it has merely aged past
+     * [CACHE_TTL_MS], while it's looked up again in the background for the next build. Blocks only
+     * when nothing has been found yet, or Incredibuild has been uninstalled since. Never on the EDT.
+     */
+    fun checkForIdeBuild(tool: AcceleratedBuildTool): IncredibuildStatus {
+        val facts = cached
+        if (facts == null || facts.isUninstalled()) return check(tool)
+        if (facts.isAged()) refreshInBackground()
+        return statusOf(facts, tool)
+    }
+
+    /** Looks up again on a pooled thread if what's cached is stale, so the next [check] needn't. */
+    fun refreshInBackground() {
+        if (!refreshing.compareAndSet(false, true)) return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            // Which tool doesn't matter: what's cached is the same for all of them.
+            try {
+                check(AcceleratedBuildTool.NATIVE)
+            } finally {
+                refreshing.set(false)
+            }
+        }
+    }
+
     /** What [check] would return without having to look again, or null if it would have to. */
     fun cachedStatus(tool: AcceleratedBuildTool): IncredibuildStatus? =
         cached?.takeUnless { it.isStale() }?.let { statusOf(it, tool) }
 
-    private fun Facts.isStale(): Boolean =
-        System.currentTimeMillis() - checkedAt > CACHE_TTL_MS ||
-            // Uninstalled since: no need to wait out the cache to notice.
-            (installFolder != null && !installFolder.isDirectory)
+    private fun Facts.isStale(): Boolean = isAged() || isUninstalled()
+
+    private fun Facts.isAged(): Boolean = System.currentTimeMillis() - checkedAt > CACHE_TTL_MS
+
+    /** Uninstalled since: no need to wait out the cache to notice. */
+    private fun Facts.isUninstalled(): Boolean = installFolder != null && !installFolder.isDirectory
 
     private fun lookUp(): Facts {
         val installFolder = IncredibuildLocator.findInstallFolder()?.takeIf { it.isDirectory }
@@ -182,8 +215,13 @@ internal object IncredibuildInstallation {
                 handler.runProcess(LICENSE_QUERY_TIMEOUT_MS)
             }
             if (output.isCancelled) throw ProcessCanceledException()
-            if (output.isTimeout || output.exitCode != 0) return null
-            parseLicensed(output.stdout)
+            if (output.isTimeout) return null
+            // Whatever the exit code: if BuildConsole exits non-zero without a licence, its
+            // "InitiatorRegType None" must still count as no licence, or the build would be accelerated
+            // rather than fall back. A failure that prints no such line is still "unknown".
+            parseLicensed(output.stdout).also {
+                if (output.exitCode != 0) LOG.info("BuildConsole /QueryLicense exited with ${output.exitCode}; licensed: $it")
+            }
         } catch (e: ProcessCanceledException) {
             throw e
         } catch (e: Exception) {

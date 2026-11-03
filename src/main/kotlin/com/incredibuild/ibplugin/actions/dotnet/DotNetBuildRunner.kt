@@ -152,7 +152,7 @@ internal object DotNetBuildRunner {
      * cancelling it throws [com.intellij.openapi.progress.ProcessCanceledException].
      */
     fun checkIdeBuild(project: Project, request: DotNetBuildRequest): IdeBuildCheck {
-        val status = IncredibuildInstallation.check(AcceleratedBuildTool.NATIVE)
+        val status = IncredibuildInstallation.checkForIdeBuild(AcceleratedBuildTool.NATIVE)
         if (status !is IncredibuildStatus.Ready) {
             IdeBuildFallback.notify(project, status)
             return IdeBuildCheck.FallBack

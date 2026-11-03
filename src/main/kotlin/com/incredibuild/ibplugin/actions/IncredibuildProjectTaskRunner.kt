@@ -120,7 +120,7 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
         tasks: Array<out ProjectTask>,
         promise: AsyncPromise<Result>
     ) {
-        val status = IncredibuildInstallation.check(AcceleratedBuildTool.CARGO)
+        val status = IncredibuildInstallation.checkForIdeBuild(AcceleratedBuildTool.CARGO)
         if (status !is IncredibuildStatus.Ready) {
             // A notification rather than the explicit menu actions' dialogs: this is a standard
             // IDE build, which must go ahead as a normal one - the user is only told why it

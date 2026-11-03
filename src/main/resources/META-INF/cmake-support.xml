@@ -5,7 +5,8 @@
      these actions are built on - see actions/cmake/CMakeBuildCommand.kt. -->
 <idea-plugin>
     <extensions defaultExtensionNs="com.intellij">
-        <!-- Ahead of CLion's own CMakeProjectTaskRunner (itself order="first"):
+        <!-- Ahead of CLion's own CMakeProjectTaskRunner (itself order="first", and registered
+             with id="CMakeProjectTaskRunner" - what the "before" below names):
              ProjectTaskManagerImpl assigns each task to the first runner whose canRun accepts
              it, and this one only accepts when the user has opted in (Settings > Tools >
              Incredibuild), declining to CLion's build otherwise. -->

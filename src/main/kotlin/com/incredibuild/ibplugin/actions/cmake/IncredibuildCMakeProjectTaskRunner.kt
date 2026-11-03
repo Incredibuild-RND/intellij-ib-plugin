@@ -129,7 +129,7 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
             delegateToCLion(project, context, tasks, promise)
         }
 
-        val status = IncredibuildInstallation.check(AcceleratedBuildTool.NATIVE)
+        val status = IncredibuildInstallation.checkForIdeBuild(AcceleratedBuildTool.NATIVE)
         if (status !is IncredibuildStatus.Ready) {
             IdeBuildFallback.notify(project, status)
             delegateToCLion(project, context, tasks, promise)

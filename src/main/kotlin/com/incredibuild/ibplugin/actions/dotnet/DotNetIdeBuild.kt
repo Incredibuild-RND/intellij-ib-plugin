@@ -77,9 +77,11 @@ abstract class RiderBuildActionOverride internal constructor(
 
         // Under a modal progress, because what's found decides whether Rider's own action runs
         // instead - which has to happen here, with this event. The installation and MSBuild
-        // lookups are cached (and the installation checked when the project opens - see
-        // IncredibuildInstallationWarmUp), so it's rarely slow. Cancellable all the same: the
-        // licence query can take a while, and cancelling it just builds the way Rider does.
+        // lookups are cached, the installation looked up in the background when the project opens
+        // or the setting is turned on (see IncredibuildInstallationWarmUp) and refreshed in the
+        // background after that (see IncredibuildInstallation.checkForIdeBuild), so it's rarely
+        // slow. Cancellable all the same: the licence query can take a while, and cancelling it
+        // just builds the way Rider does.
         val check = try {
             ProgressManager.getInstance().runProcessWithProgressSynchronously(
                 ThrowableComputable<IdeBuildCheck, RuntimeException> { DotNetBuildRunner.checkIdeBuild(project, request) },
@@ -96,9 +98,20 @@ abstract class RiderBuildActionOverride internal constructor(
                 val dataContext = e.dataContext
                 val place = e.place
                 DotNetBuildRunner.buildForIde(project, request, check) { reason ->
-                    IdeBuildFallback.notify(project, reason)
                     ApplicationManager.getApplication().invokeLater(
                         {
+                            // Rider's Build Selection reads the selection from the context when it
+                            // runs - so if that no longer says what this was asked to build, it
+                            // would build something else; better to say so and leave it to the user.
+                            if (selection != null && !sameSelection(selection, RiderSolutionModel.selection(dataContext))) {
+                                IdeBuildFallback.notifyNotBuilt(
+                                    project,
+                                    "$reason The selection in the Solution Explorer has changed since, so " +
+                                        "it wasn't built the standard way either. Build the selection again."
+                                )
+                                return@invokeLater
+                            }
+                            IdeBuildFallback.notify(project, reason)
                             val event = AnActionEvent.createEvent(
                                 dataContext,
                                 delegate.templatePresentation.clone(),
@@ -115,6 +128,9 @@ abstract class RiderBuildActionOverride internal constructor(
             IdeBuildCheck.FallBack -> super.actionPerformed(e)
         }
     }
+
+    private fun sameSelection(a: SolutionSelection, b: SolutionSelection): Boolean =
+        if (a is SolutionSelection.Projects && b is SolutionSelection.Projects) a.projectFiles == b.projectFiles else a == b
 }
 
 /** Rider's Build Solution ("BuildWholeSolutionAction" - also what the toolbar's Build button runs). */

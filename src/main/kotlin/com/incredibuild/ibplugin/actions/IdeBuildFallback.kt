@@ -57,6 +57,19 @@ internal object IdeBuildFallback {
     /** For anything else that kept the build from being accelerated; [reason] is shown as-is. */
     fun notify(project: Project, reason: String) = show(project, reason, "other", offerDownload = false)
 
+    /**
+     * For a build that couldn't be accelerated and couldn't be handed back to the IDE's own builder
+     * either, so nothing was built; [reason] is shown as-is. Every time - unlike [notify], this
+     * isn't something the next build repeats.
+     */
+    fun notifyNotBuilt(project: Project, reason: String) {
+        PostHogClient.capture("ide_build_fallback", mapOf("reason" to "not_built"))
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup(NOTIFICATION_GROUP_ID)
+            .createNotification("Not built", reason, NotificationType.ERROR)
+            .notify(project)
+    }
+
     private fun show(project: Project, reason: String, analyticsReason: String, offerDownload: Boolean) {
         PostHogClient.capture("ide_build_fallback", mapOf("reason" to analyticsReason))
         if (!isFirstTime(project, reason)) return
