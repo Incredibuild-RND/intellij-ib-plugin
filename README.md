@@ -38,7 +38,7 @@ commands and keyboard shortcuts stay exactly where they are; only what happens u
   the solution), **Rebuild Solution**, **Build Selection** in the Solution Explorer, and a run
   configuration's **Build Solution** / **Build Project** step.
 
-In every IDE, an accelerated build of the IDE's own reports into the IDE's **Build** tool window, just
+In every IDE, when one of the IDE's own builds is accelerated, it reports into the IDE's **Build** tool window, just
 as a local build does: its output live, with progress (Ninja's and Make's step counts, MSBuild's
 finished projects) while it's distributed; each compiler error and warning in the build tree,
 clickable through to its file and line (as are the file locations in the output); and the result and

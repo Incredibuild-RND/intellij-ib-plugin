@@ -144,7 +144,9 @@ class IncredibuildProjectTaskRunner : ProjectTaskRunner() {
         for (planned in plannedBuilds) {
             // One Incredibuild build at a time, as for the Incredibuild menu's builds - this one
             // reports into the Build tool window rather than ours, but would still overlap one
-            // running there. Checked before the clean too, which must not run under a build.
+            // running there. Checked before the clean too, which must not run under a build. Not
+            // atomic with starting the build, which the Rust plugin's build manager does later in
+            // a callback of its own - see IncredibuildRunner's buildStartLock.
             if (!IncredibuildRunner.awaitNoBuildRunning(project)) {
                 promise.setResult(TaskRunnerResults.ABORTED)
                 return

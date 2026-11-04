@@ -23,6 +23,7 @@ import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.BoundConfigurable
@@ -35,8 +36,13 @@ import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
 import com.intellij.util.concurrency.AppExecutorUtil
 
+private val LOG = Logger.getInstance(IncredibuildConfigurable::class.java)
+
 private val RUST_PLUGIN_ID = PluginId.getId("com.jetbrains.rust")
-private val CMAKE_PLUGIN_ID = PluginId.getId("com.intellij.cmake")
+
+// Registered by cmake-support.xml, so present exactly when the CMake half - and with it the
+// project task runner this setting switches on - is loaded.
+private const val CMAKE_ACTION_ID = "Incredibuild.CMake.Build"
 
 // Registered by rider-support.xml, so present exactly when the .NET half is loaded. Checked instead
 // of the com.intellij.modules.rider alias it's gated on: PluginManagerCore.isLoaded() only matches
@@ -49,7 +55,7 @@ class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
 
     private val isRider = ActionManager.getInstance().getAction(RIDER_ACTION_ID) != null
     private val hasRust = PluginManagerCore.isLoaded(RUST_PLUGIN_ID)
-    private val hasCMake = PluginManagerCore.isLoaded(CMAKE_PLUGIN_ID)
+    private val hasCMake = ActionManager.getInstance().getAction(CMAKE_ACTION_ID) != null
 
     /** Cargo's minimum Incredibuild version is the only one there is - see [AcceleratedBuildTool]. */
     private val buildTool = if (hasRust) AcceleratedBuildTool.CARGO else AcceleratedBuildTool.NATIVE
@@ -106,9 +112,21 @@ class IncredibuildConfigurable : BoundConfigurable("Incredibuild") {
         installationLabel.icon = AnimatedIcon.Default.INSTANCE
         installationLabel.text = "Checking..."
         AppExecutorUtil.getAppExecutorService().execute {
-            val status = IncredibuildInstallation.check(buildTool, refresh)
-            ApplicationManager.getApplication().invokeLater({ show(status) }, ModalityState.any())
+            // Anything but a status leaves the label on "Checking..." unless it's shown too.
+            val update = try {
+                val status = IncredibuildInstallation.check(buildTool, refresh)
+                Runnable { show(status) }
+            } catch (e: Exception) {
+                LOG.warn("Could not check the Incredibuild installation", e)
+                Runnable { showError("Could not check the Incredibuild installation: ${e.message ?: e.javaClass.simpleName}") }
+            }
+            ApplicationManager.getApplication().invokeLater(update, ModalityState.any())
         }
+    }
+
+    private fun showError(message: String) {
+        installationLabel.icon = AllIcons.General.Error
+        installationLabel.text = message
     }
 
     private fun show(status: IncredibuildStatus) {

@@ -13,7 +13,7 @@
   Solution** (and the toolbar's Build button), **Rebuild Solution**, **Build Selection** and a run configuration's
   **Build Solution**/**Build Project** step. It's still off by default, and the **Incredibuild** menu's actions are
   unaffected by it.
-- Accelerated CLion and Rider builds of the IDE's own report into the IDE's **Build** tool window, as RustRover's
+- When CLion's and Rider's own builds are accelerated, they report into the IDE's **Build** tool window, as RustRover's
   already did and as a local build does: live output and progress, compiler errors and warnings in the build tree
   that open their file and line, clickable file locations in the output, and the result with its duration. The
   **Build** tool window's stop button cancels the Incredibuild build gracefully.

@@ -86,7 +86,12 @@ object IncredibuildRunner {
     /**
      * Held while checking that no build is running and registering a new one as [activeProcessHandler],
      * so that builds started from different threads - the EDT's ([whenNoBuildRunning]) and the
-     * IDE build pipeline's ([startWhenNoBuildRunning]) - can't both find nothing running.
+     * CLion/Rider build pipeline's ([startWhenNoBuildRunning]) - can't both find nothing running.
+     * Only the process is created under it; setting up its console happens after.
+     *
+     * Cargo's IDE builds aren't covered: the Rust plugin's build manager creates their process in
+     * a callback of its own, after [awaitNoBuildRunning] (see [IncredibuildProjectTaskRunner]), so
+     * a build started from the Incredibuild menu in between can still run alongside one.
      */
     private val buildStartLock = Any()
 
@@ -531,20 +536,18 @@ object IncredibuildRunner {
         onStarted: (OSProcessHandler) -> Unit = {},
         onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
-        whenNoBuildRunning(project, onNotStarted) {
-            onStarted(start(project, commandLine, contentName, banner, onFinished))
+        whenNoBuildRunning(project, onNotStarted, create = { createProcessHandler(commandLine) }) { processHandler ->
+            onStarted(start(project, processHandler, contentName, banner, onFinished))
         }
     }
 
     private fun start(
         project: Project,
-        commandLine: GeneralCommandLine,
+        processHandler: OSProcessHandler,
         contentName: String,
         banner: String?,
         onFinished: ((exitCode: Int) -> Unit)?
     ): OSProcessHandler {
-        val processHandler = createProcessHandler(commandLine)
-
         val console = ConsoleViewImpl(project, true)
         console.attachToProcess(processHandler)
         if (banner != null) {
@@ -727,16 +730,25 @@ object IncredibuildRunner {
      * BuildConsole would queue it behind the first ("Waiting for a build to complete..."), nothing
      * guarantees ib_console does the same.
      *
-     * Checked in [run], on the EDT, and [start] registers the build as the active one in the same
-     * EDT event - so two quick clicks can't both get past it. After a stop the check runs again
+     * Checked in [run], on the EDT, and [create] registers the build as the active one under the
+     * same [buildStartLock] - so neither two quick clicks nor a build started from a background
+     * thread can both get past it. [start] then gets the new process, outside the lock, so the
+     * EDT holds it no longer than creating the process takes. After a stop the check runs again
      * before starting, in case something else started meanwhile. A Rebuild's chained build is
      * unaffected: its clean has already ended by the time the build starts. Builds started from a
      * background thread wait with [awaitNoBuildRunning] instead.
      */
-    private fun whenNoBuildRunning(project: Project, onDeclined: () -> Unit, start: () -> Unit) {
+    private fun whenNoBuildRunning(
+        project: Project,
+        onDeclined: () -> Unit,
+        create: () -> OSProcessHandler,
+        start: (OSProcessHandler) -> Unit
+    ) {
+        var created: OSProcessHandler? = null
         val running = synchronized(buildStartLock) {
-            activeProcessHandler?.takeUnless { it.isProcessTerminated }.also { if (it == null) start() }
-        } ?: return
+            activeProcessHandler?.takeUnless { it.isProcessTerminated }.also { if (it == null) created = create() }
+        }
+        if (running == null) return start(created!!)
         if (!askToStopRunningBuild(project)) {
             onDeclined()
             return
@@ -745,7 +757,7 @@ object IncredibuildRunner {
         val settled = AtomicBoolean()
         val retry = {
             if (settled.compareAndSet(false, true)) {
-                ApplicationManager.getApplication().invokeLater { whenNoBuildRunning(project, onDeclined, start) }
+                ApplicationManager.getApplication().invokeLater { whenNoBuildRunning(project, onDeclined, create, start) }
             }
         }
         running.addProcessListener(object : ProcessListener {

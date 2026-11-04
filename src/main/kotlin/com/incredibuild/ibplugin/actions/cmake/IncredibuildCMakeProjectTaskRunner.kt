@@ -49,6 +49,7 @@ import com.jetbrains.cidr.cpp.execution.build.runners.CMakeProjectTaskRunner
 import com.jetbrains.cidr.execution.build.tasks.CidrCleanTask
 import org.jetbrains.concurrency.AsyncPromise
 import org.jetbrains.concurrency.Promise
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Runs CLion's own build actions through Incredibuild when Settings | Tools | Incredibuild says
@@ -105,14 +106,22 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
 
     override fun run(project: Project, context: ProjectTaskContext, vararg tasks: ProjectTask): Promise<Result> {
         val promise = AsyncPromise<Result>()
+        // Set once a planned build has finished - see runOnPooledThread.
+        val builtAny = AtomicBoolean(false)
         // Checking the installation reads the registry and may start BuildConsole, and expanding
         // the tasks reads the CMake model - none of which may happen on the EDT.
         ApplicationManager.getApplication().executeOnPooledThread {
             try {
-                runOnPooledThread(project, context, tasks, promise)
+                runOnPooledThread(project, context, tasks, promise, builtAny)
             } catch (e: Exception) {
-                LOG.warn("Incredibuild build failed to start; falling back to CLion's own build", e)
-                delegateToCLion(project, context, tasks, promise)
+                // As for NotPrepared below: CLion would build everything again.
+                if (builtAny.get()) {
+                    LOG.warn("Incredibuild build failed after building part of it", e)
+                    promise.setResult(TaskRunnerResults.FAILURE)
+                } else {
+                    LOG.warn("Incredibuild build failed to start; falling back to CLion's own build", e)
+                    delegateToCLion(project, context, tasks, promise)
+                }
             }
         }
         return promise
@@ -122,7 +131,8 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
         project: Project,
         context: ProjectTaskContext,
         tasks: Array<out ProjectTask>,
-        promise: AsyncPromise<Result>
+        promise: AsyncPromise<Result>,
+        builtAny: AtomicBoolean
     ) {
         fun fallBack(reason: String) {
             IdeBuildFallback.notify(project, reason)
@@ -182,9 +192,12 @@ class IncredibuildCMakeProjectTaskRunner : ProjectTaskRunner() {
                     promise.setResult(TaskRunnerResults.FAILURE)
                 }
                 IdeBuildOutcome.NotStarted -> return promise.setResult(TaskRunnerResults.ABORTED)
-                is IdeBuildOutcome.Finished -> when {
-                    outcome.stopped -> return promise.setResult(TaskRunnerResults.ABORTED)
-                    outcome.exitCode != 0 -> return promise.setResult(TaskRunnerResults.FAILURE)
+                is IdeBuildOutcome.Finished -> {
+                    builtAny.set(true)
+                    when {
+                        outcome.stopped -> return promise.setResult(TaskRunnerResults.ABORTED)
+                        outcome.exitCode != 0 -> return promise.setResult(TaskRunnerResults.FAILURE)
+                    }
                 }
             }
         }

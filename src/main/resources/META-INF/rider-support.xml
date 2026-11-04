@@ -14,19 +14,23 @@
                                 implementation="com.incredibuild.ibplugin.actions.dotnet.RiderBuildProjectBeforeRunOverride"/>
     </extensions>
 
-    <actions>
-        <!-- Rider's own Build Solution, Rebuild Solution and Build Selection, overridden so they go
-             through Incredibuild when Settings > Tools > Incredibuild says to - and run Rider's
-             own otherwise (see RiderBuildActionOverride). Overridden by id, so menus, the
-             toolbar's Build button, keyboard shortcuts and the context menu all reach them.
-             The text and icon here are the ones Rider registers them with; Rebuild Solution and
-             Build Selection set their own text, which the overrides take from Rider's action. -->
+    <!-- Rider's own Build Solution, Rebuild Solution and Build Selection, overridden so they go
+         through Incredibuild when Settings > Tools > Incredibuild says to - and run Rider's
+         own otherwise (see RiderBuildActionOverride). Overridden by id, so menus, the
+         toolbar's Build button, keyboard shortcuts and the context menu all reach them.
+
+         Build Solution takes its text and description from Rider's registration of it: the
+         action.BuildWholeSolutionAction.* keys of Rider's own bundle, so they stay localised.
+         The icon is the one Rider registers it with. Rebuild Solution and Build Selection set
+         their own text, which the overrides take from Rider's action. -->
+    <actions resource-bundle="messages.RiderActionsBundle">
         <action id="BuildWholeSolutionAction"
                 class="com.incredibuild.ibplugin.actions.dotnet.RiderBuildSolutionOverride"
                 overrides="true"
-                text="Build Solution"
-                description="Build whole solution"
                 icon="AllIcons.Actions.Compile"/>
+    </actions>
+
+    <actions>
         <action id="RebuildSolutionAction"
                 class="com.incredibuild.ibplugin.actions.dotnet.RiderRebuildSolutionOverride"
                 overrides="true"/>
