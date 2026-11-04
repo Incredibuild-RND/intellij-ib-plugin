@@ -27,6 +27,7 @@ import com.intellij.execution.process.ColoredProcessHandler
 import com.intellij.execution.process.KillableProcessHandler
 import com.intellij.execution.process.OSProcessHandler
 import com.intellij.execution.process.ProcessEvent
+import com.intellij.execution.process.ProcessHandler
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.util.ExecUtil
 import com.intellij.ide.BrowserUtil
@@ -54,20 +55,11 @@ private val BUILD_ID_REGEX = Regex("""Build ID:\s*\{([0-9A-Fa-f-]+)}""")
 // Used for both Windows and Linux - same landing page for both.
 private const val INCREDIBUILD_WEBSITE = "https://www.incredibuild.com/integrations/jetbrains-ides"
 
-private const val INCREDIBUILD_DOWNLOAD_PAGE =
+internal const val INCREDIBUILD_DOWNLOAD_PAGE =
     "https://docs.incredibuild.com/site-landing/download-docs-center"
 
-private const val MINIMUM_RUST_BUILD_VERSION = "10.37.1"
-
-// The Linux team found an issue with an earlier released Linux Incredibuild
-// version during RustRover integration testing, hence this gate. Deliberately a
-// separate constant, not shared with the Windows one: Windows and Linux
-// Incredibuild use entirely unrelated version-numbering schemes (e.g.
-// "10.37.0.12597" vs "3.18.0").
-private const val MINIMUM_RUST_BUILD_VERSION_LINUX = "4.29.3"
-
 /** Declared in plugin.xml. */
-private const val NOTIFICATION_GROUP_ID = "Incredibuild"
+internal const val NOTIFICATION_GROUP_ID = "Incredibuild"
 
 private const val STATUS_POLL_INTERVAL_MS = 250L
 
@@ -91,6 +83,18 @@ object IncredibuildRunner {
     @Volatile
     private var activeProcessHandler: OSProcessHandler? = null
 
+    /**
+     * Held while checking that no build is running and registering a new one as [activeProcessHandler],
+     * so that builds started from different threads - the EDT's ([whenNoBuildRunning]) and the
+     * CLion/Rider build pipeline's ([startWhenNoBuildRunning]) - can't both find nothing running.
+     * Only the process is created under it; setting up its console happens after.
+     *
+     * Cargo's IDE builds aren't covered: the Rust plugin's build manager creates their process in
+     * a callback of its own, after [awaitNoBuildRunning] (see [IncredibuildProjectTaskRunner]), so
+     * a build started from the Incredibuild menu in between can still run alongside one.
+     */
+    private val buildStartLock = Any()
+
     /** The Incredibuild build-id of [activeProcessHandler], parsed from its own stdout, if any. */
     @Volatile
     private var activeBuildId: String? = null
@@ -113,7 +117,7 @@ object IncredibuildRunner {
             return null
         }
 
-        val minimumVersion = if (SystemInfo.isLinux) MINIMUM_RUST_BUILD_VERSION_LINUX else MINIMUM_RUST_BUILD_VERSION
+        val minimumVersion = AcceleratedBuildTool.CARGO.minimumVersion!!
         val installedVersion = IncredibuildLocator.findVersion()
         if (installedVersion != null &&
             IncredibuildLocator.compareVersions(installedVersion, minimumVersion) < 0
@@ -452,11 +456,15 @@ object IncredibuildRunner {
      * accelerated build is visible even with the Incredibuild tool window hidden - and reports
      * the outcome as a notification once it ends. Cancelling the progress stops the build the
      * same graceful way Stop Build does ([OSProcessHandler.destroyProcess] on our handler).
+     *
+     * [notifyResult] false leaves out the notification, for a build whose outcome the Build tool
+     * window already reports (see [IdeBuildView]).
      */
     private fun trackInStatusBar(
         project: Project,
         processHandler: OSProcessHandler,
-        presentation: AcceleratedBuildPresentation
+        presentation: AcceleratedBuildPresentation,
+        notifyResult: Boolean = true
     ) {
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, presentation.progressTitle, true) {
             override fun run(indicator: ProgressIndicator) {
@@ -474,6 +482,7 @@ object IncredibuildRunner {
                         indicator.text = "Stopping Incredibuild build..."
                     }
                 }
+                if (!notifyResult) return
                 val exitCode = processHandler.exitCode
                 val (content, type) = when {
                     processHandler.wasStopRequested() -> "${presentation.contentName} was stopped." to NotificationType.INFORMATION
@@ -527,20 +536,18 @@ object IncredibuildRunner {
         onStarted: (OSProcessHandler) -> Unit = {},
         onFinished: ((exitCode: Int) -> Unit)? = null
     ) {
-        whenNoBuildRunning(project, onNotStarted) {
-            onStarted(start(project, commandLine, contentName, banner, onFinished))
+        whenNoBuildRunning(project, onNotStarted, create = { createProcessHandler(commandLine) }) { processHandler ->
+            onStarted(start(project, processHandler, contentName, banner, onFinished))
         }
     }
 
     private fun start(
         project: Project,
-        commandLine: GeneralCommandLine,
+        processHandler: OSProcessHandler,
         contentName: String,
         banner: String?,
         onFinished: ((exitCode: Int) -> Unit)?
     ): OSProcessHandler {
-        val processHandler = createProcessHandler(commandLine)
-
         val console = ConsoleViewImpl(project, true)
         console.attachToProcess(processHandler)
         if (banner != null) {
@@ -681,7 +688,11 @@ object IncredibuildRunner {
         val stopRequested: Boolean
     }
 
-    private fun OSProcessHandler.wasStopRequested(): Boolean = (this as? IncredibuildProcessHandler)?.stopRequested == true
+    private fun OSProcessHandler.wasStopRequested(): Boolean = wasStopRequested(this)
+
+    /** Whether [processHandler] - one of [createProcessHandler]'s - ended because it was asked to stop. */
+    internal fun wasStopRequested(processHandler: ProcessHandler): Boolean =
+        (processHandler as? IncredibuildProcessHandler)?.stopRequested == true
 
     /**
      * Asks Incredibuild to cancel the running build by build-id, returning false if there
@@ -719,18 +730,25 @@ object IncredibuildRunner {
      * BuildConsole would queue it behind the first ("Waiting for a build to complete..."), nothing
      * guarantees ib_console does the same.
      *
-     * Checked in [run], on the EDT, and [start] registers the build as the active one in the same
-     * EDT event - so two quick clicks can't both get past it. After a stop the check runs again
+     * Checked in [run], on the EDT, and [create] registers the build as the active one under the
+     * same [buildStartLock] - so neither two quick clicks nor a build started from a background
+     * thread can both get past it. [start] then gets the new process, outside the lock, so the
+     * EDT holds it no longer than creating the process takes. After a stop the check runs again
      * before starting, in case something else started meanwhile. A Rebuild's chained build is
      * unaffected: its clean has already ended by the time the build starts. Builds started from a
      * background thread wait with [awaitNoBuildRunning] instead.
      */
-    private fun whenNoBuildRunning(project: Project, onDeclined: () -> Unit, start: () -> Unit) {
-        val running = activeProcessHandler?.takeUnless { it.isProcessTerminated }
-        if (running == null) {
-            start()
-            return
+    private fun whenNoBuildRunning(
+        project: Project,
+        onDeclined: () -> Unit,
+        create: () -> OSProcessHandler,
+        start: (OSProcessHandler) -> Unit
+    ) {
+        var created: OSProcessHandler? = null
+        val running = synchronized(buildStartLock) {
+            activeProcessHandler?.takeUnless { it.isProcessTerminated }.also { if (it == null) created = create() }
         }
+        if (running == null) return start(created!!)
         if (!askToStopRunningBuild(project)) {
             onDeclined()
             return
@@ -739,7 +757,7 @@ object IncredibuildRunner {
         val settled = AtomicBoolean()
         val retry = {
             if (settled.compareAndSet(false, true)) {
-                ApplicationManager.getApplication().invokeLater { whenNoBuildRunning(project, onDeclined, start) }
+                ApplicationManager.getApplication().invokeLater { whenNoBuildRunning(project, onDeclined, create, start) }
             }
         }
         running.addProcessListener(object : ProcessListener {
@@ -778,6 +796,21 @@ object IncredibuildRunner {
                 notifyStopTimedOut(project)
                 return false
             }
+        }
+    }
+
+    /**
+     * [awaitNoBuildRunning], then [create] - registering the new build as the active one (see
+     * [createProcessHandler]) - with no gap between finding nothing running and doing so, in which
+     * another build could start. Null if the user chose not to stop the running build, or it
+     * didn't stop in time. Blocking: never call it on the EDT.
+     */
+    private fun startWhenNoBuildRunning(project: Project, create: () -> OSProcessHandler): OSProcessHandler? {
+        while (true) {
+            synchronized(buildStartLock) {
+                if (activeProcessHandler?.takeUnless { it.isProcessTerminated } == null) return create()
+            }
+            if (!awaitNoBuildRunning(project)) return null
         }
     }
 
@@ -919,6 +952,87 @@ object IncredibuildRunner {
             is PreparedBuild.Failed -> showErrorOnEdt(project, prepared.message)
             is PreparedBuild.Ready -> launchBuild(project, prepared, actionType, presentation)
         }
+    }
+
+    /** How a build started by [runNativeBuildAndWait] ended. */
+    internal sealed interface IdeBuildOutcome {
+        /** It couldn't be prepared ([message] says why), so nothing ran - the caller falls back. */
+        class NotPrepared(val message: String) : IdeBuildOutcome
+
+        /** Another build was running and the user chose not to stop it, or it didn't stop in time. */
+        data object NotStarted : IdeBuildOutcome
+
+        class Finished(val exitCode: Int, val stopped: Boolean) : IdeBuildOutcome
+    }
+
+    /**
+     * [launchNativeBuild] for the IDE's own builds - CLion's [com.intellij.task.ProjectTaskRunner],
+     * Rider's build actions and before-launch build - which report into the IDE's Build tool
+     * window ([IdeBuildView]) rather than ours, just as a local build of theirs would, and as the
+     * Cargo IDE build does. Blocks until the build ends, so the caller can report the outcome;
+     * never call it on the EDT.
+     *
+     * [presentation]'s banner heads the build's output, and its progress title stays in the status
+     * bar while it runs - the result itself is the Build tool window's to report.
+     *
+     * [outputBaseDirectories] resolve the relative paths in compiler messages; the build's working
+     * directory is tried after them.
+     */
+    internal fun runNativeBuildAndWait(
+        project: Project,
+        installFolder: File,
+        build: NativeBuild,
+        actionType: String,
+        presentation: AcceleratedBuildPresentation,
+        outputBaseDirectories: List<String> = emptyList()
+    ): IdeBuildOutcome {
+        val prepared = when (val result = prepareNativeBuild(project, installFolder, build)) {
+            is PreparedBuild.Failed -> return IdeBuildOutcome.NotPrepared(result.message)
+            is PreparedBuild.Ready -> result
+        }
+        // One Incredibuild build at a time, as for the Incredibuild menu's builds - asked here,
+        // where blocking is fine (see awaitNoBuildRunning). decodeAnsiColors = false: the Build
+        // tool window colours output by reading the escape codes from the text itself - see
+        // RawIncredibuildProcessHandler.
+        val processHandler = try {
+            startWhenNoBuildRunning(project) { createProcessHandler(prepared.commandLine, decodeAnsiColors = false) }
+        } catch (e: Exception) {
+            prepared.cleanUp()
+            throw e
+        }
+        if (processHandler == null) {
+            prepared.cleanUp()
+            return IdeBuildOutcome.NotStarted
+        }
+        try {
+            processHandler.addProcessListener(object : ProcessListener {
+                override fun processTerminated(event: ProcessEvent) = prepared.cleanUp()
+            })
+            IdeBuildView(
+                project,
+                "${presentation.contentName} with Incredibuild",
+                build.workingDirectory,
+                (outputBaseDirectories + build.workingDirectory).distinct(),
+                processHandler
+            ).start(presentation.banner)
+            trackInStatusBar(project, processHandler, presentation, notifyResult = false)
+        } catch (e: Exception) {
+            // The process is already running (OSProcessHandler starts it), but nothing would
+            // report or stop it now - so it's ended here, and its files cleaned up with it.
+            processHandler.destroyProcess()
+            processHandler.startNotify()
+            throw e
+        }
+
+        PostHogClient.capture("build_started", mapOf("action" to actionType))
+        PostHogClient.captureOnce(
+            "com.incredibuild.ibplugin.analytics.firstBuildSent",
+            "first_build",
+            mapOf("action" to actionType)
+        )
+        processHandler.startNotify()
+        processHandler.waitFor()
+        return IdeBuildOutcome.Finished(processHandler.exitCode ?: -1, processHandler.wasStopRequested())
     }
 
     /**

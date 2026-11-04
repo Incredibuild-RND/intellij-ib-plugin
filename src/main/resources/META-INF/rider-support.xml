@@ -3,7 +3,42 @@
      Rider's solution model through the Rider-only adapter module (rider/, merged into this
      plugin's jar), then run MSBuild through Incredibuild - see actions/dotnet/. -->
 <idea-plugin>
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- Stand-ins for Rider's own "Build Solution"/"Build Project" before-launch steps, which
+             go through Incredibuild when Settings > Tools > Incredibuild says to and are Rider's
+             own otherwise. order="first" is what makes them the ones that run those steps - see
+             RiderBeforeRunBuildOverride for why that's all it changes. -->
+        <stepsBeforeRunProvider order="first"
+                                implementation="com.incredibuild.ibplugin.actions.dotnet.RiderBuildSolutionBeforeRunOverride"/>
+        <stepsBeforeRunProvider order="first"
+                                implementation="com.incredibuild.ibplugin.actions.dotnet.RiderBuildProjectBeforeRunOverride"/>
+    </extensions>
+
+    <!-- Rider's own Build Solution, Rebuild Solution and Build Selection, overridden so they go
+         through Incredibuild when Settings > Tools > Incredibuild says to - and run Rider's
+         own otherwise (see RiderBuildActionOverride). Overridden by id, so menus, the
+         toolbar's Build button, keyboard shortcuts and the context menu all reach them.
+
+         Build Solution takes its text and description from Rider's registration of it: the
+         action.BuildWholeSolutionAction.* keys of Rider's own bundle, so they stay localised.
+         The icon is the one Rider registers it with. Rebuild Solution and Build Selection set
+         their own text, which the overrides take from Rider's action. -->
+    <actions resource-bundle="messages.RiderActionsBundle">
+        <action id="BuildWholeSolutionAction"
+                class="com.incredibuild.ibplugin.actions.dotnet.RiderBuildSolutionOverride"
+                overrides="true"
+                icon="AllIcons.Actions.Compile"/>
+    </actions>
+
     <actions>
+        <action id="RebuildSolutionAction"
+                class="com.incredibuild.ibplugin.actions.dotnet.RiderRebuildSolutionOverride"
+                overrides="true"/>
+        <action id="BuildSelection"
+                class="com.incredibuild.ibplugin.actions.dotnet.RiderBuildSelectionOverride"
+                overrides="true"
+                icon="AllIcons.Actions.Compile"/>
+
         <!-- Full "... with Incredibuild" names, unlike the Rust/CMake halves' plain
              "Build"/"Rebuild": these also sit in Rider's own Build menu and Solution Explorer
              context menu, right next to the standard actions they accelerate, where a bare

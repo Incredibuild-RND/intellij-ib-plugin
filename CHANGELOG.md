@@ -4,6 +4,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Accelerate the IDE's own build actions** now works in CLion and Rider too, not only RustRover. With it on, the
+  IDE's standard **Build** and **Rebuild** - from the **Build** menu, the toolbar or keyboard shortcuts - and the build
+  a run configuration performs before it starts go through Incredibuild. In CLion that's **Build**/**Rebuild** of the
+  selected target, **Build Project**/**Build All** and a CMake run configuration's **Build** step; in Rider, **Build
+  Solution** (and the toolbar's Build button), **Rebuild Solution**, **Build Selection** and a run configuration's
+  **Build Solution**/**Build Project** step. It's still off by default, and the **Incredibuild** menu's actions are
+  unaffected by it.
+- When CLion's and Rider's own builds are accelerated, they report into the IDE's **Build** tool window, as RustRover's
+  already did and as a local build does: live output and progress, compiler errors and warnings in the build tree
+  that open their file and line, clickable file locations in the output, and the result with its duration. The
+  **Build** tool window's stop button cancels the Incredibuild build gracefully.
+- **Settings/Preferences > Tools > Incredibuild** shows the Incredibuild installation the plugin uses - version,
+  folder, and whether it's installed, licensed (on Windows) and a supported version - with **Check again**.
+
+### Changed
+
+- With **Accelerate the IDE's own build actions** on, a build that can't go through Incredibuild - not installed, not
+  licensed, an unsupported version - now falls back to a standard local build with a notification saying why, in
+  every IDE (once per reason per project session, not on every build). In RustRover it used to fall back silently,
+  and didn't check the version or licence at all.
+
 ## [1.1.0]
 
 ### Added
