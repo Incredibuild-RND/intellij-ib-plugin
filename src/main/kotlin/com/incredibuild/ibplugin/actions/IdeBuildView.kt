@@ -38,10 +38,6 @@ import java.nio.file.Files
 import java.nio.file.InvalidPathException
 import java.nio.file.Path
 
-/** Where MSBuild's closing summary starts and ends - see [IdeBuildView.inMsBuildSummary]. */
-private val MSBUILD_SUMMARY_START = Regex("""^\s*Build (succeeded|FAILED)\.\s*$""")
-private val MSBUILD_SUMMARY_END = Regex("""^\s*Time Elapsed\b.*$""")
-
 /**
  * Reports an accelerated build of the IDE's own (see [IncredibuildRunner.runNativeBuildAndWait])
  * into the IDE's Build tool window, the way a local build reports there - as the Cargo build
@@ -71,23 +67,7 @@ internal class IdeBuildView(
     /** Partial last lines, per stream, until their line ends - output arrives in arbitrary chunks. */
     private val pendingLines = mutableMapOf<Key<*>, StringBuilder>()
 
-    /**
-     * One tree entry per distinct error or warning - a header's warning hit by every source file
-     * including it would otherwise fill the tree. Each occurrence still counts, as the compiler's
-     * own counts do.
-     */
-    private val reported = mutableSetOf<BuildOutputLine.Diagnostic>()
-
-    /**
-     * Inside MSBuild's closing summary, which repeats every error and warning already reported:
-     * from its "Build succeeded."/"Build FAILED." to its "Time Elapsed". Only until then, as a
-     * build of more than one command (a clean, then the build) has a summary of its own for each.
-     * Guarded by [reported].
-     */
-    private var inMsBuildSummary = false
-
-    private var errors = 0
-    private var warnings = 0
+    private val tally = DiagnosticTally()
     private var startedAt = 0L
 
     fun start(banner: String) {
@@ -127,6 +107,8 @@ internal class IdeBuildView(
         val finishedAt = System.currentTimeMillis()
         val duration = StringUtil.formatDuration(finishedAt - startedAt)
         val stopped = IncredibuildRunner.wasStopRequested(processHandler)
+        val errors = tally.errors
+        val warnings = tally.warnings
         val counts = listOfNotNull(
             StringUtil.pluralize("error", errors).let { "$errors $it" }.takeIf { errors > 0 },
             StringUtil.pluralize("warning", warnings).let { "$warnings $it" }.takeIf { warnings > 0 },
@@ -151,17 +133,11 @@ internal class IdeBuildView(
     private fun report(rawLine: String) {
         // Stripped for the tree entries' details too, which show text as-is, escape codes and all.
         val line = CompilerOutputParser.stripAnsi(rawLine)
-        when {
-            MSBUILD_SUMMARY_START.matches(line) -> synchronized(reported) { inMsBuildSummary = true }
-            MSBUILD_SUMMARY_END.matches(line) -> synchronized(reported) { inMsBuildSummary = false }
-        }
-        when (val parsed = CompilerOutputParser.parse(line)) {
+        val parsed = CompilerOutputParser.parse(line)
+        val newEntry = tally.add(line, parsed)
+        when (parsed) {
             is BuildOutputLine.Diagnostic -> {
-                synchronized(reported) {
-                    if (inMsBuildSummary) return
-                    if (parsed.isError) errors++ else warnings++
-                    if (!reported.add(parsed.copy(locationRange = null))) return
-                }
+                if (!newEntry) return
                 val kind = if (parsed.isError) MessageEvent.Kind.ERROR else MessageEvent.Kind.WARNING
                 val path = parsed.file?.let(::resolve)
                 if (path != null && parsed.line != null) {

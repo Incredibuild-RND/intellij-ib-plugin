@@ -60,9 +60,11 @@ internal object CompilerOutputParser {
 
     /** MSVC/MSBuild without a line: `LINK : fatal error LNK1104: ...`, `MSBUILD : error MSB1009: ...`,
      * `cl : Command line warning D9002: ...`, a project-level `C:\src\App.csproj : error NU1101: ...`
-     * (its origin may start with a drive) and code-less `EXEC : error : ...`. */
+     * (its origin may start with a drive) and code-less `EXEC : error : ...`. Without a code, only
+     * MSBuild's own form of that - `error :`, the space left by the empty code - so other tools'
+     * `...: error: ...` lines (CTest's `Test #3: error: ...`, say) aren't taken for build errors. */
     private val MSVC_UNLOCATED = Regex(
-        """^\s*(?:\d+>)?\s*(?:(?:[A-Za-z]:)?[^:\s][^:]*?\s*:\s*)?(?:Command line\s+)?$KIND(?:\s+(?<code>[A-Za-z]+\d+))?\s*:\s*""" +
+        """^\s*(?:\d+>)?\s*(?:(?:[A-Za-z]:)?[^:\s][^:]*?\s*:\s*)?(?:Command line\s+)?$KIND(?:\s+(?<code>[A-Za-z]+\d+)\s*|\s+):\s*""" +
             """(?<msg>.*?)(?:\s+\[[^\]]+])?\s*$"""
     )
 
@@ -89,8 +91,7 @@ internal object CompilerOutputParser {
         if (line.isBlank()) return null
         located(MSVC_LOCATED, line)?.let { return it }
         located(GCC_LOCATED, line)?.let { return it }
-        // Ahead of MSVC_UNLOCATED, which - with its code optional - would take `clang: error: ...`
-        // too, dropping the tool's name.
+        // Ahead of MSVC_UNLOCATED, so a GCC-style tool's line keeps its tool's name.
         TOOL_UNLOCATED.matchEntire(line)?.let { match ->
             return diagnostic(match, "${match.groups["tool"]!!.value}: ${match.groups["msg"]!!.value}")
         }

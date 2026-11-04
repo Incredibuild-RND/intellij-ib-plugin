@@ -147,6 +147,12 @@ class CompilerOutputParserTest {
     }
 
     @Test
+    fun `a code-less error only in MSBuild's own form is a diagnostic`() {
+        assertNull(CompilerOutputParser.parse("Test #3: error: assertion failed"))
+        assertNull(CompilerOutputParser.parse("    Test #3: warning: deprecated call"))
+    }
+
+    @Test
     fun `a GCC-style tool error names the tool`() {
         val parsed = diagnostic("clang: error: linker command failed with exit code 1 (use -v to see invocation)")
         assertNull(parsed.file)

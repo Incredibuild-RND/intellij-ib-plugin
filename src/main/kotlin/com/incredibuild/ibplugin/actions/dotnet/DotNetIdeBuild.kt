@@ -95,23 +95,15 @@ abstract class RiderBuildActionOverride internal constructor(
         when (check) {
             is IdeBuildCheck.Ready -> {
                 // Kept for falling back later, on another thread, once this event has been handled.
+                // The context is the platform's snapshot of the UI taken when the action fired
+                // (PreCachedDataContext, from Utils.createAsyncDataContext), so Build Selection
+                // replayed with it builds what was selected then, even if the selection has moved on.
                 val dataContext = e.dataContext
                 val place = e.place
                 DotNetBuildRunner.buildForIde(project, request, check) { reason ->
+                    IdeBuildFallback.notify(project, reason)
                     ApplicationManager.getApplication().invokeLater(
                         {
-                            // Rider's Build Selection reads the selection from the context when it
-                            // runs - so if that no longer says what this was asked to build, it
-                            // would build something else; better to say so and leave it to the user.
-                            if (selection != null && !sameSelection(selection, RiderSolutionModel.selection(dataContext))) {
-                                IdeBuildFallback.notifyNotBuilt(
-                                    project,
-                                    "$reason The selection in the Solution Explorer has changed since, so " +
-                                        "it wasn't built the standard way either. Build the selection again."
-                                )
-                                return@invokeLater
-                            }
-                            IdeBuildFallback.notify(project, reason)
                             val event = AnActionEvent.createEvent(
                                 dataContext,
                                 delegate.templatePresentation.clone(),
@@ -128,9 +120,6 @@ abstract class RiderBuildActionOverride internal constructor(
             IdeBuildCheck.FallBack -> super.actionPerformed(e)
         }
     }
-
-    private fun sameSelection(a: SolutionSelection, b: SolutionSelection): Boolean =
-        if (a is SolutionSelection.Projects && b is SolutionSelection.Projects) a.projectFiles == b.projectFiles else a == b
 }
 
 /** Rider's Build Solution ("BuildWholeSolutionAction" - also what the toolbar's Build button runs). */
